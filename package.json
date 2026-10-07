@@ -4,7 +4,7 @@
   "description": "Multi-platform messaging CLI for AI agents (Slack, Discord, Teams, Webex, Telegram, Telegram Bot, WhatsApp, LINE, iMessage, Instagram, KakaoTalk, Channel Talk)",
   "repository": {
     "type": "git",
-    "url": "https://github.com/agent-messenger/agent-messenger"
+    "url": "https://github.com/ajentix/agent-messenger"
   },
   "bin": {
     "agent-channeltalk": "./src/platforms/channeltalk/cli.ts",
