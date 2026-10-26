@@ -112,6 +112,21 @@ it('send: returns message with id', async () => {
   expect(output).toContain('msg_123')
 })
 
+it('send: passes files and thread to the client', async () => {
+  const consoleSpy = mock((_msg: string) => {})
+  console.log = consoleSpy
+
+  await sendAction('team_123', 'ch_456', 'Report attached', {
+    pretty: false,
+    thread: 'root_123',
+    files: ['report.pdf', 'data.xlsx'],
+  })
+
+  expect(clientSendMessageSpy).toHaveBeenCalledWith('team_123', 'ch_456', 'Report attached', 'root_123', 'text', {
+    files: ['report.pdf', 'data.xlsx'],
+  })
+})
+
 it('list: returns array of messages', async () => {
   const consoleSpy = mock((_msg: string) => {})
   console.log = consoleSpy

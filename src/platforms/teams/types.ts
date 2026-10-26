@@ -88,6 +88,27 @@ export interface TeamsFile {
   is_folder?: boolean
 }
 
+export interface TeamsAttachment {
+  id: string
+  name: string
+  content_url: string
+  web_url: string
+  drive_id: string
+  item_id: string
+  size: number
+  shared_with: string[]
+}
+
+export type TeamsChatFileAttachment = TeamsAttachment
+export type TeamsAttachmentRecord = TeamsAttachment
+
+export interface TeamsReferenceAttachment {
+  id: string
+  contentType: 'reference'
+  contentUrl: string
+  name: string
+}
+
 export interface TeamsCredentials {
   token: string
   cookie?: string
@@ -98,6 +119,10 @@ export type TeamsAccountType = 'work' | 'personal'
 export type TeamsRegion = 'amer' | 'emea' | 'apac'
 
 export type TeamsMessageFormat = 'text' | 'markdown' | 'html'
+
+export interface TeamsSendMessageOptions {
+  files?: string[]
+}
 
 export type TeamsAuthMethod = 'device-code' | 'browser' | 'extracted' | 'manual'
 

@@ -140,6 +140,17 @@ it('send: defaults to text format when --format is omitted', async () => {
   expect(clientSendChatMessageSpy).toHaveBeenCalledWith('19:1on1@unq.gbl.spaces', 'plain', 'text')
 })
 
+it('send: passes repeated file options to the client', async () => {
+  const consoleSpy = mock((_msg: string) => {})
+  console.log = consoleSpy
+
+  await sendAction('19:1on1@unq.gbl.spaces', 'with files', { pretty: false, files: ['a.pdf', 'b.xlsx'] })
+
+  expect(clientSendChatMessageSpy).toHaveBeenCalledWith('19:1on1@unq.gbl.spaces', 'with files', 'text', {
+    files: ['a.pdf', 'b.xlsx'],
+  })
+})
+
 it('send: rejects an invalid format', async () => {
   const consoleSpy = mock((_msg: string) => {})
   console.log = consoleSpy

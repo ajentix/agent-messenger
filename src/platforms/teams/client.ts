@@ -1,22 +1,25 @@
 import { randomUUID } from 'node:crypto'
-import { readFile } from 'node:fs/promises'
+import { readFile, stat } from 'node:fs/promises'
 import { basename } from 'node:path'
 
 import { escapeHtml, markdownToHtml } from '@/shared/utils/markdown-to-html'
 
 import { SUBSTRATE_SEARCH_URL } from './app-config'
+import { appendAttachmentTags, attachmentIdFromETag, referenceAttachments } from './attachments'
 import { TeamsCredentialManager } from './credential-manager'
 import { TeamsGraph, graphMessage, graphTeam, graphChannel, graphUser, graphFile, segment, messageText } from './graph'
 import { sanitizeTeamsHtml } from './html-sanitizer'
 import { TeamsTokenProvider } from './token-provider'
 import type {
   TeamsAccountType,
+  TeamsAttachment,
   TeamsChannel,
   TeamsChat,
   TeamsChatType,
   TeamsFile,
   TeamsMessage,
   TeamsMessageFormat,
+  TeamsSendMessageOptions,
   TeamsRegion,
   TeamsSearchResult,
   TeamsTeam,
@@ -37,6 +40,26 @@ const BASE_BACKOFF_MS = 100
 const DEFAULT_REGION: TeamsRegion = 'amer'
 const REGIONS: TeamsRegion[] = ['amer', 'emea', 'apac']
 const GRAPH_API_BASE = 'https://graph.microsoft.com/v1.0'
+const MAX_MESSAGE_FILES = 10
+const MAX_ATTACHMENT_SIZE = 250 * 1024 * 1024
+const SMALL_UPLOAD_LIMIT = 4 * 1024 * 1024
+const UPLOAD_CHUNK_SIZE = 10 * 320 * 1024
+const CHAT_FILES_FOLDER = 'Microsoft Teams Chat Files'
+
+interface DriveItemMetadata {
+  id?: string
+  name?: string
+  eTag?: string
+  webUrl?: string
+  webDavUrl?: string
+  size?: number
+  parentReference?: { driveId?: string }
+}
+
+interface ChatRecipient {
+  identifier: string
+  invite: { objectId: string } | { email: string }
+}
 
 function reactionUnicode(emoji: string): string {
   const aliases: Record<string, string> = {
@@ -697,7 +720,27 @@ export class TeamsClient {
     return messages
   }
 
-  async sendChatMessage(chatId: string, content: string, format: TeamsMessageFormat = 'text'): Promise<TeamsMessage> {
+  async sendChatMessage(
+    chatId: string,
+    content: string,
+    format: TeamsMessageFormat = 'text',
+    options?: TeamsSendMessageOptions,
+  ): Promise<TeamsMessage> {
+    const files = options?.files ?? []
+    this.validateMessageFiles(content, files)
+    if (files.length > 0) {
+      await this.validateAttachmentFiles(files)
+      const recipients = await this.resolveChatRecipients(chatId)
+      const records: TeamsAttachment[] = []
+      for (const filePath of files) records.push(await this.uploadChatFileResolved(filePath, recipients))
+      const html = appendAttachmentTags(formatContent(content, format), records)
+      const raw = await this.graph().request('POST', `/chats/${segment(chatId)}/messages`, {
+        body: { contentType: 'html', content: html },
+        attachments: referenceAttachments(records),
+      })
+      return { ...graphMessage(raw, chatId), attachments: records }
+    }
+
     interface SendResponse {
       OriginalArrivalTime?: number
     }
@@ -786,9 +829,23 @@ export class TeamsClient {
     content: string,
     rootMessageId?: string,
     format: TeamsMessageFormat = 'text',
+    options?: TeamsSendMessageOptions,
   ): Promise<TeamsMessage> {
+    const files = options?.files ?? []
+    this.validateMessageFiles(content, files)
     const path =
       this.channelPath(teamId, channelId) + '/messages' + (rootMessageId ? `/${segment(rootMessageId)}/replies` : '')
+    if (files.length > 0) {
+      await this.validateAttachmentFiles(files)
+      const records: TeamsAttachment[] = []
+      const folder = await this.fileFolder(teamId, channelId)
+      for (const filePath of files) records.push(await this.uploadDriveAttachment(folder.driveId, folder.id, filePath))
+      const raw = await this.graph().request('POST', path, {
+        body: { contentType: 'html', content: appendAttachmentTags(formatContent(content, format), records) },
+        attachments: referenceAttachments(records),
+      })
+      return { ...graphMessage(raw, channelId, rootMessageId), attachments: records }
+    }
     const raw = await this.graph().request('POST', path, {
       body: { contentType: 'html', content: formatContent(content, format) },
     })
@@ -933,6 +990,183 @@ export class TeamsClient {
 
   async getUser(userId: string): Promise<TeamsUser> {
     return graphUser(await this.graph().request('GET', `/users/${segment(userId)}`))
+  }
+
+  private validateMessageFiles(content: string, files: string[]): void {
+    if (files.length > MAX_MESSAGE_FILES)
+      throw new TeamsError(`A message can include at most ${MAX_MESSAGE_FILES} files.`, 'too_many_files')
+    if (!content && files.length === 0)
+      throw new TeamsError('Message content or at least one file is required.', 'empty_message')
+  }
+
+  private async validateAttachmentFile(filePath: string): Promise<number> {
+    let info
+    try {
+      info = await stat(filePath)
+    } catch {
+      throw new TeamsError(`File not found: ${filePath}`, 'file_not_found')
+    }
+    if (!info.isFile()) throw new TeamsError(`Path is not a regular file: ${filePath}`, 'file_not_regular')
+    if (info.size <= 0) throw new TeamsError(`File is empty: ${filePath}`, 'file_empty')
+    if (info.size > MAX_ATTACHMENT_SIZE)
+      throw new TeamsError(`File exceeds the 250 MiB limit: ${filePath}`, 'file_too_large')
+    return info.size
+  }
+
+  private async validateAttachmentFiles(filePaths: string[]): Promise<void> {
+    for (const filePath of filePaths) await this.validateAttachmentFile(filePath)
+  }
+
+  private async resolveChatRecipients(chatId: string): Promise<ChatRecipient[]> {
+    if (chatId === '48:notes') return []
+    const me = await this.graph().request<{ id?: string }>('GET', '/me?$select=id')
+    const members = await this.graph().collection(`/chats/${segment(chatId)}/members`)
+    const recipients: ChatRecipient[] = []
+    for (const member of members) {
+      const userId = typeof member.userId === 'string' && member.userId ? member.userId : undefined
+      if (userId && userId === me.id) continue
+      const email = typeof member.email === 'string' && member.email ? member.email : undefined
+      if (!userId && !email) throw new TeamsError('A chat member has no userId or email.', 'chat_member_unresolved')
+      recipients.push(
+        userId
+          ? { identifier: userId, invite: { objectId: userId } }
+          : { identifier: email!, invite: { email: email! } },
+      )
+    }
+    return recipients
+  }
+
+  private async inviteChatRecipients(driveId: string, itemId: string, recipients: ChatRecipient[]): Promise<void> {
+    if (recipients.length === 0) return
+    await this.graph().request('POST', `/drives/${segment(driveId)}/items/${segment(itemId)}/invite`, {
+      requireSignIn: true,
+      sendInvitation: false,
+      roles: ['read'],
+      recipients: recipients.map((recipient) => recipient.invite),
+    })
+  }
+
+  private async getDriveItem(driveId: string, itemId: string): Promise<DriveItemMetadata> {
+    return this.graph().request<DriveItemMetadata>(
+      'GET',
+      `/drives/${segment(driveId)}/items/${segment(itemId)}?$select=id,name,eTag,webUrl,webDavUrl,size,parentReference`,
+    )
+  }
+
+  private async uploadDriveAttachment(
+    driveId: string,
+    folderId: string,
+    filePath: string,
+    folderPath?: string,
+  ): Promise<TeamsAttachment> {
+    const bytes = await readFile(filePath)
+    const name = basename(filePath)
+    const itemId = await this.uploadDriveBytes(driveId, folderId, name, bytes, folderPath)
+    const item = await this.getDriveItem(driveId, itemId)
+    if (!item.id || !item.name || !item.eTag)
+      throw new TeamsError('Uploaded drive item metadata is incomplete.', 'attachment_metadata_missing')
+    const contentUrl = item.webDavUrl ?? item.webUrl
+    if (!contentUrl) throw new TeamsError('Uploaded drive item has no web URL.', 'attachment_url_missing')
+    return {
+      id: attachmentIdFromETag(item.eTag),
+      name: item.name,
+      content_url: contentUrl,
+      web_url: item.webUrl ?? contentUrl,
+      drive_id: driveId,
+      item_id: item.id,
+      size: item.size ?? bytes.byteLength,
+      shared_with: [],
+    }
+  }
+
+  private async uploadDriveBytes(
+    driveId: string,
+    folderId: string,
+    name: string,
+    bytes: Uint8Array,
+    folderPath?: string,
+  ): Promise<string> {
+    const graph = this.graph()
+    const itemPath = folderPath
+      ? `/me/drive/root:/${segment(folderPath)}/${segment(name)}:`
+      : `/drives/${segment(driveId)}/items/${segment(folderId)}:/${segment(name)}:`
+    if (bytes.byteLength <= SMALL_UPLOAD_LIMIT) {
+      const raw = await graph.request<DriveItemMetadata>(
+        'PUT',
+        `${itemPath}/content?@microsoft.graph.conflictBehavior=rename`,
+        undefined,
+        bytes,
+      )
+      if (!raw.id) throw new TeamsError('Small upload did not return a drive item.', 'attachment_upload_missing')
+      return raw.id
+    }
+
+    const session = await graph.request<{ uploadUrl?: string }>('POST', `${itemPath}/createUploadSession`, {
+      item: { '@microsoft.graph.conflictBehavior': 'rename' },
+    })
+    if (!session.uploadUrl)
+      throw new TeamsError('Upload session did not return an upload URL.', 'upload_session_missing')
+    let uploadUrl: URL
+    try {
+      uploadUrl = new URL(session.uploadUrl)
+    } catch {
+      throw new TeamsError('Upload session returned an invalid upload URL.', 'upload_url_invalid')
+    }
+    if (uploadUrl.protocol !== 'https:') throw new TeamsError('Upload URL must use HTTPS.', 'upload_url_untrusted')
+
+    let uploadedItemId: string | undefined
+    try {
+      for (let start = 0; start < bytes.byteLength; start += UPLOAD_CHUNK_SIZE) {
+        const end = Math.min(start + UPLOAD_CHUNK_SIZE, bytes.byteLength) - 1
+        const chunk = bytes.slice(start, end + 1)
+        const response = await fetch(uploadUrl.toString(), {
+          method: 'PUT',
+          headers: {
+            'Content-Length': String(chunk.byteLength),
+            'Content-Range': `bytes ${start}-${end}/${bytes.byteLength}`,
+          },
+          body: chunk as unknown as RequestInit['body'],
+        })
+        if (!response.ok)
+          throw new TeamsError(`Upload chunk failed with HTTP ${response.status}.`, 'upload_chunk_failed')
+        if (end === bytes.byteLength - 1) {
+          if (response.status !== 200 && response.status !== 201)
+            throw new TeamsError('Final upload chunk did not return a drive item.', 'upload_chunk_failed')
+          const raw = (await response.json().catch(() => ({}))) as DriveItemMetadata
+          uploadedItemId = raw.id
+        }
+      }
+      if (!uploadedItemId)
+        throw new TeamsError('Upload session did not identify the uploaded item.', 'attachment_upload_missing')
+    } catch (error) {
+      try {
+        await fetch(uploadUrl.toString(), { method: 'DELETE' })
+      } catch {}
+      if (error instanceof TeamsError) throw error
+      throw new TeamsError('Upload chunk failed.', 'upload_chunk_failed')
+    }
+
+    return uploadedItemId
+  }
+
+  private async uploadChatFileResolved(filePath: string, recipients: ChatRecipient[]): Promise<TeamsAttachment> {
+    const drive = await this.graph().request<{ id?: string }>('GET', '/me/drive?$select=id')
+    if (!drive.id) throw new TeamsError('OneDrive is unavailable.', 'drive_missing')
+    const attachment = await this.uploadDriveAttachment(drive.id, '', filePath, CHAT_FILES_FOLDER)
+    await this.inviteChatRecipients(drive.id, attachment.item_id, recipients)
+    return { ...attachment, shared_with: recipients.map((recipient) => recipient.identifier) }
+  }
+
+  async uploadChatFile(chatId: string, filePath: string): Promise<TeamsAttachment> {
+    await this.validateAttachmentFile(filePath)
+    const recipients = await this.resolveChatRecipients(chatId)
+    return this.uploadChatFileResolved(filePath, recipients)
+  }
+
+  async uploadChannelAttachment(teamId: string, channelId: string, filePath: string): Promise<TeamsAttachment> {
+    await this.validateAttachmentFile(filePath)
+    const folder = await this.fileFolder(teamId, channelId)
+    return this.uploadDriveAttachment(folder.driveId, folder.id, filePath)
   }
 
   private async fileFolder(teamId: string, channelId: string): Promise<{ id: string; driveId: string }> {

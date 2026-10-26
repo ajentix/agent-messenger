@@ -207,6 +207,8 @@ Output includes the authenticated user's identity information.
 # Send a message
 agent-teams message send <team-id> <channel-id> <content>
 agent-teams message send <team-id> 19:abc123@thread.tacv2 "Hello world"
+agent-teams message send <team-id> <channel-id> "Report attached" --file ./report.pdf --file ./data.xlsx
+agent-teams message send <team-id> <channel-id> --thread <root-message-id> --file ./report.pdf
 
 # Send a rich-text message written in markdown
 agent-teams message send <team-id> <channel-id> "## Deploy done
@@ -258,6 +260,8 @@ agent-teams chat history <chat-id> --limit 100
 # Send a message to a chat
 agent-teams chat send <chat-id> "Hello"
 agent-teams chat send <chat-id> "**Important**: see the [board](https://example.com)" --format markdown
+agent-teams chat send <chat-id> "Report attached" --file ./report.pdf
+agent-teams chat send <chat-id> --file ./report.pdf --file ./archive.zip
 
 # Edit one of your own chat messages
 agent-teams chat edit <chat-id> <message-id> "Updated text"
@@ -271,6 +275,8 @@ Chat IDs look like `19:guid1_guid2@unq.gbl.spaces` (1:1) or `19:guid@thread.tacv
 ### Message Formatting
 
 `message send`, `chat send`, and `chat edit` accept `--format <text|markdown|html>` (default `text`).
+
+`message send` and `chat send` accept repeatable `--file <path>` options, with up to 10 files per message. Text can be omitted when a file is attached. Channel files are stored in the channel files folder. Chat files are stored in the sender's OneDrive under `Microsoft Teams Chat Files`; only the other chat members receive read access, with no anonymous or organization-wide link.
 
 In `text` mode the content is HTML-escaped, so `<`, `>`, and `&` are sent literally.
 
