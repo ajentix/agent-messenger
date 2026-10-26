@@ -6,7 +6,8 @@ const GUID_PATTERN = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{1
 export function attachmentIdFromETag(eTag: string | undefined): string {
   const match = typeof eTag === 'string' ? eTag.match(new RegExp(`\\{?(${GUID_PATTERN})\\}?`, 'i')) : undefined
   if (!match) throw new TeamsError('Drive item eTag does not contain a GUID.', 'attachment_etag_missing')
-  return match[1]
+  // eTags carry an uppercase GUID, while Teams stores and returns attachment ids in lowercase.
+  return match[1].toLowerCase()
 }
 
 export function referenceAttachments(records: TeamsAttachment[]): TeamsReferenceAttachment[] {

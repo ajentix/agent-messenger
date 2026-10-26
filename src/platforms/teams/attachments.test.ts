@@ -12,6 +12,9 @@ describe('Teams attachments', () => {
     const guid = '11111111-1111-1111-1111-111111111111'
     expect(attachmentIdFromETag(`"{${guid}},3"`)).toBe(guid)
     expect(attachmentIdFromETag(`${guid},7`)).toBe(guid)
+    expect(attachmentIdFromETag('"{9F1FCD81-5822-4B40-85FE-FEB114ADD057},2"')).toBe(
+      '9f1fcd81-5822-4b40-85fe-feb114add057',
+    )
     expect(() => attachmentIdFromETag(undefined)).toThrow(TeamsError)
   })
 
