@@ -226,6 +226,15 @@ export interface KakaoReplyTarget {
   type: number
 }
 
+export interface KakaoEditResult {
+  success: boolean
+  status_code: number
+  chat_id: string
+  log_id: string
+  revision: string | null
+  message: string | null
+}
+
 export interface KakaoMarkReadResult {
   success: boolean
   status_code: number
@@ -306,6 +315,15 @@ export const KakaoSendResultSchema = z.object({
   chat_id: z.string(),
   log_id: z.string(),
   sent_at: z.number(),
+})
+
+export const KakaoEditResultSchema = z.object({
+  success: z.boolean(),
+  status_code: z.number(),
+  chat_id: z.string(),
+  log_id: z.string(),
+  revision: z.string().nullable(),
+  message: z.string().nullable(),
 })
 
 export const KakaoMarkReadResultSchema = z.object({

@@ -2,7 +2,14 @@ import { describe, expect, it, mock } from 'bun:test'
 
 import { Long } from 'bson'
 
-import { buildTypingActionBody, sendTypingPacket, TYPING_ACTION_METHOD } from './session'
+import {
+  buildModifyMessageBody,
+  buildTypingActionBody,
+  MODIFY_MESSAGE_METHOD,
+  sendModifyMessagePacket,
+  sendTypingPacket,
+  TYPING_ACTION_METHOD,
+} from './session'
 import type { LocoPacket } from './types'
 
 type SentPacket = { method: string; body: Record<string, unknown> }
@@ -109,5 +116,38 @@ describe('sendTypingPacket → sendPacket wire boundary', () => {
     const packet = sent[0]!
     expect(packet.method).toBe(TYPING_ACTION_METHOD)
     expect(packet.body).toEqual(buildTypingActionBody(Long.fromString('123'), Long.fromString('456')))
+  })
+})
+
+describe('message edit wire contract', () => {
+  it('MODIFY_MESSAGE_METHOD is the exact string "MODIFYMSG" that KakaoTalk expects on the wire', () => {
+    expect(MODIFY_MESSAGE_METHOD).toBe('MODIFYMSG')
+  })
+
+  it('carries chatId, logId, text type 1, the new text and an empty extra object', () => {
+    const body = buildModifyMessageBody(
+      Long.fromString('468258044152571'),
+      Long.fromString('3960132955101280257'),
+      'fixed',
+    )
+
+    expect((body.chatId as { toString(): string }).toString()).toBe('468258044152571')
+    expect((body.logId as { toString(): string }).toString()).toBe('3960132955101280257')
+    expect(body.type).toBe(1)
+    expect(body.msg).toBe('fixed')
+    expect(body.extra).toBe('{}')
+    expect(Object.keys(body).sort()).toEqual(['chatId', 'extra', 'logId', 'msg', 'type'])
+  })
+
+  it('calls connection.sendPacket("MODIFYMSG", body) exactly once and returns its packet', async () => {
+    const reply: LocoPacket = { statusCode: 0, body: { status: 0, modifiedChatLog: { revision: 1 } } }
+    const { connection, sent, sendPacketMock } = fakeConnection(reply)
+
+    const result = await sendModifyMessagePacket(connection, Long.fromString('100'), Long.fromString('42'), 'fixed')
+
+    expect(sendPacketMock).toHaveBeenCalledTimes(1)
+    expect(sent[0]!.method).toBe('MODIFYMSG')
+    expect((sent[0]!.body.logId as { toString(): string }).toString()).toBe('42')
+    expect(result).toBe(reply)
   })
 })

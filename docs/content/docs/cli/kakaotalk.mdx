@@ -220,6 +220,9 @@ agent-kakaotalk message upload <chat-id> ./img1.jpg ./img2.jpg ./img3.jpg
 agent-kakaotalk message upload <chat-id> ./clip.mp4 --as file
 agent-kakaotalk message upload <chat-id> ./data.bin --mime application/octet-stream
 
+# Edit a text message you sent (within 24 hours)
+agent-kakaotalk message edit <chat-id> <log-id> "Corrected text"
+
 # Mark messages as read up to a given log ID
 agent-kakaotalk message mark-read <chat-id> <log-id>
 agent-kakaotalk message mark-read <chat-id> <log-id> --link-id <li>   # open chats only
@@ -266,6 +269,35 @@ Each message includes:
 - `message` — message text content (empty string for non-text messages like stickers)
 - `attachment` — parsed JSON metadata for non-text messages (e.g. photo URL/dimensions, sticker path), or `null` for plain text. Shape varies by `type`; treat as an opaque object and narrow per message type.
 - `sent_at` — Unix timestamp (milliseconds)
+
+#### Editing a Message
+
+`message edit` sends a LOCO `MODIFYMSG` packet that replaces the text of a message you sent. Get the `log_id` from `message list` (or from the `send` output). Recipients see the new text with KakaoTalk's "Edited" label.
+
+```bash
+agent-kakaotalk message edit <chat-id> <log-id> "Corrected text"
+```
+
+Output (JSON by default; `--pretty` pretty-prints the same JSON):
+
+```json
+{
+  "success": true,
+  "status_code": 0,
+  "chat_id": "9876543210",
+  "log_id": "3846830417126748160",
+  "revision": "1",
+  "message": "Corrected text"
+}
+```
+
+The process exits non-zero when `success` is `false`.
+
+Notes:
+
+- KakaoTalk only accepts edits to your own messages within 24 hours of sending. This command edits plain text messages only; quoted replies, photos, files and other media are not supported. The server refuses anything else with a non-zero `status_code`.
+- An edit is sent exactly once. If the connection drops before the server answers, the result is `success: false` with `status_code: -1` and the edit may or may not have been applied; check with `message list` before trying again.
+- `revision` is the edit count the server assigned (the original message is revision 0).
 
 #### Fetching More Messages
 
@@ -326,7 +358,7 @@ Output includes:
 - No chat room creation
 - No friend list management
 - No reactions or emoji
-- No message editing or deletion
+- No message deletion (editing your own text messages is supported, see `message edit`)
 - No open chat browsing or joining
 - No search across chats
 

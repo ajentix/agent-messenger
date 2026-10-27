@@ -16,6 +16,7 @@ import {
   KAKAO_MESSAGE_TYPE,
   type KakaoChat,
   type KakaoDeviceType,
+  type KakaoEditResult,
   type KakaoLeaveChatResult,
   type KakaoMarkReadResult,
   type KakaoMember,
@@ -1419,6 +1420,49 @@ export class KakaoTalkClient {
         throw wrapError(error, 'send_message_failed')
       }
     })
+  }
+
+  /**
+   * Edit the text of a message this account sent (MODIFYMSG). KakaoTalk only
+   * accepts the author's own text messages within 24 hours of sending and
+   * reports anything else as a non-zero status, which is returned as
+   * `success: false` rather than thrown.
+   *
+   * Deliberately not wrapped in executeWithReconnect: every accepted edit
+   * bumps the message revision, so a request that may already have reached
+   * the server is never sent again on a fresh session.
+   */
+  async editMessage(chatId: string, logId: string, text: string): Promise<KakaoEditResult> {
+    const parsedChatId = parseChatId(chatId)
+    const parsedLogId = parseLogId(logId)
+    if (text.trim().length === 0) {
+      throw new KakaoTalkError('Edited message text must not be empty', 'invalid_message_text')
+    }
+
+    const { session } = await this.ensureSession()
+    try {
+      const response = await session.modifyMessage(parsedChatId, parsedLogId, text)
+      // The edit verdict lives in body.status (e.g. -212 once the 24-hour window
+      // has passed); a non-zero transport statusCode is the synthetic packet
+      // LocoConnection.handleClose resolves with, so the outcome is unknown.
+      const status =
+        response.statusCode !== 0
+          ? response.statusCode
+          : typeof response.body.status === 'number'
+            ? response.body.status
+            : 0
+      const edited = response.body.modifiedChatLog as { revision?: unknown; message?: unknown } | undefined
+      return {
+        success: status === 0,
+        status_code: status,
+        chat_id: chatId,
+        log_id: logId,
+        revision: edited?.revision !== undefined ? longToString(edited.revision) : null,
+        message: typeof edited?.message === 'string' ? edited.message : null,
+      }
+    } catch (error) {
+      throw wrapError(error, 'edit_message_failed')
+    }
   }
 
   async sendTyping(chatId: string, opts?: { linkId?: string }): Promise<KakaoTypingResult> {

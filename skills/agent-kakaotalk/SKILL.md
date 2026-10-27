@@ -369,6 +369,9 @@ agent-kakaotalk message upload <chat-id> ./clip.mp4 --as file       # send as ge
 agent-kakaotalk message upload <chat-id> ./image --as photo         # extension-less file
 agent-kakaotalk message upload <chat-id> ./data.bin --mime application/octet-stream
 
+# Edit a text message you sent (within 24 hours)
+agent-kakaotalk message edit <chat-id> <log-id> "Corrected text"
+
 # Mark messages as read up to a given log ID
 agent-kakaotalk message mark-read <chat-id> <log-id>
 agent-kakaotalk message mark-read <chat-id> <log-id> --pretty
@@ -433,6 +436,34 @@ Notes:
 - KakaoTalk caps single-message attachment sizes server-side (currently ~300MB for files, ~20MB per image in multi-photo). The CLI surfaces the server's status code on rejection.
 - Filenames are preserved on the recipient side for `file` kind, used as a display label for `audio`, and ignored for `photo` / `video` (the client renders the bytes directly).
 - Each upload opens one fresh TCP+LOCO connection per attachment. Multi-photo opens N connections in parallel.
+
+#### Editing a Message
+
+`message edit` sends a LOCO `MODIFYMSG` packet that replaces the text of a message you sent. Get the `log_id` from `message list` (or from the `send` output). Recipients see the new text with KakaoTalk's "Edited" label.
+
+```bash
+agent-kakaotalk message edit <chat-id> <log-id> "Corrected text"
+```
+
+Output (JSON by default; `--pretty` pretty-prints the same JSON):
+
+```json
+{
+  "success": true,
+  "status_code": 0,
+  "chat_id": "9876543210",
+  "log_id": "3846830417126748160",
+  "revision": "1",
+  "message": "Corrected text"
+}
+```
+
+The process exits non-zero when `success` is `false`.
+
+Notes:
+- KakaoTalk only accepts edits to your own messages within 24 hours of sending. This command edits plain text messages only; quoted replies, photos, files and other media are not supported. The server refuses anything else with a non-zero `status_code`.
+- An edit is sent exactly once. If the connection drops before the server answers, the result is `success: false` with `status_code: -1` and the edit may or may not have been applied; check with `message list` before trying again.
+- `revision` is the edit count the server assigned (the original message is revision 0).
 
 #### Mark as Read
 
@@ -669,7 +700,7 @@ See the [KakaoTalk SDK documentation](https://agent-messenger.dev/docs/sdk/kakao
 - No chat room creation
 - No friend list management
 - No reactions or emoji
-- No message editing or deletion
+- No message deletion (editing your own text messages is supported, see `message edit`)
 - No open chat (오픈채팅) browsing or joining
 - No search across chats
 - Stickers / emoticons cannot be sent (inbound stickers expose pack/path metadata, but the sticker store requires desktop-app purchase flows the SDK does not replicate). Photos, videos, audio, and arbitrary files can both be received and sent — see [`message upload`](#message-commands) and [`KakaoTalkClient.sendAttachment`](#sdk-programmatic-usage).
