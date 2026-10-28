@@ -226,6 +226,34 @@ export interface KakaoReplyTarget {
   type: number
 }
 
+export interface KakaoEditResult {
+  success: boolean
+  status_code: number
+  chat_id: string
+  log_id: string
+  revision: string | null
+  message: string | null
+}
+
+export interface KakaoMemberWatermark {
+  user_id: string
+  watermark: string
+}
+
+export interface KakaoMessageReadState {
+  log_id: string
+  unread_count: number
+  read_user_ids: string[]
+  unread_user_ids: string[]
+}
+
+export interface KakaoReadStateResult {
+  chat_id: string
+  last_log_id: string | null
+  watermarks: KakaoMemberWatermark[]
+  messages: KakaoMessageReadState[]
+}
+
 export interface KakaoMarkReadResult {
   success: boolean
   status_code: number
@@ -306,6 +334,34 @@ export const KakaoSendResultSchema = z.object({
   chat_id: z.string(),
   log_id: z.string(),
   sent_at: z.number(),
+})
+
+export const KakaoEditResultSchema = z.object({
+  success: z.boolean(),
+  status_code: z.number(),
+  chat_id: z.string(),
+  log_id: z.string(),
+  revision: z.string().nullable(),
+  message: z.string().nullable(),
+})
+
+export const KakaoMemberWatermarkSchema = z.object({
+  user_id: z.string(),
+  watermark: z.string(),
+})
+
+export const KakaoMessageReadStateSchema = z.object({
+  log_id: z.string(),
+  unread_count: z.number(),
+  read_user_ids: z.array(z.string()),
+  unread_user_ids: z.array(z.string()),
+})
+
+export const KakaoReadStateResultSchema = z.object({
+  chat_id: z.string(),
+  last_log_id: z.string().nullable(),
+  watermarks: z.array(KakaoMemberWatermarkSchema),
+  messages: z.array(KakaoMessageReadStateSchema),
 })
 
 export const KakaoMarkReadResultSchema = z.object({

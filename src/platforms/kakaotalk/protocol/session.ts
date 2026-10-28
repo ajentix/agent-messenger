@@ -48,6 +48,31 @@ export async function sendTypingPacket(
   return connection.sendPacket(TYPING_ACTION_METHOD, buildTypingActionBody(chatId, linkId))
 }
 
+// LOCO opcode for editing a message the account already sent. Observed from
+// KakaoTalk for Mac 26.8 (frrad/mooo research/bridge/GROUP-EDITS-DELETIONS.md,
+// MIT): `MODIFYMSG {chatId, logId, type, msg, extra}` where `type` is the
+// original message type and `extra` replaces the attachment JSON. The server
+// only accepts the author's own text messages within 24 hours of sending and
+// answers with `modifiedChatLog` carrying the bumped `revision`.
+export const MODIFY_MESSAGE_METHOD = 'MODIFYMSG'
+
+// Builds the BSON body for a plain-text edit. Text messages carry no
+// attachment, so `extra` is the empty JSON object the official client sends.
+export function buildModifyMessageBody(chatId: Long, logId: Long, text: string): Record<string, unknown> {
+  return { chatId, logId, type: KAKAO_MESSAGE_TYPE.TEXT, msg: text, extra: '{}' }
+}
+
+// Same extraction as `sendTypingPacket`: `LocoSession.modifyMessage` delegates
+// here so the wire boundary is testable without instantiating `LocoSession`.
+export async function sendModifyMessagePacket(
+  connection: { sendPacket: (method: string, body: Record<string, unknown>) => Promise<LocoPacket> },
+  chatId: Long,
+  logId: Long,
+  text: string,
+): Promise<LocoPacket> {
+  return connection.sendPacket(MODIFY_MESSAGE_METHOD, buildModifyMessageBody(chatId, logId, text))
+}
+
 export class LocoSession {
   private connection: LocoConnection | null = null
   private pingTimer: ReturnType<typeof setInterval> | null = null
@@ -176,6 +201,13 @@ export class LocoSession {
       noSeen: false,
       extra: JSON.stringify(extra),
     })
+  }
+
+  // Edit the text of a message this account sent (MODIFYMSG). See
+  // `buildModifyMessageBody` for the wire shape and server-side limits.
+  async modifyMessage(chatId: Long, logId: Long, text: string): Promise<LocoPacket> {
+    if (!this.connection) throw new Error('Not connected')
+    return sendModifyMessagePacket(this.connection, chatId, logId, text)
   }
 
   // Sends a WRITE with non-text message_type plus the JSON-stringified `extra`

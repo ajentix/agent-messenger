@@ -16,6 +16,7 @@ import {
   KAKAO_MESSAGE_TYPE,
   type KakaoChat,
   type KakaoDeviceType,
+  type KakaoEditResult,
   type KakaoLeaveChatResult,
   type KakaoMarkReadResult,
   type KakaoMember,
@@ -24,6 +25,7 @@ import {
   type KakaoMessagePage,
   type KakaoMultiPhotoExtra,
   type KakaoProfile,
+  type KakaoReadStateResult,
   type KakaoReplyExtra,
   type KakaoReplyTarget,
   type KakaoSendResult,
@@ -1417,6 +1419,106 @@ export class KakaoTalkClient {
         }
       } catch (error) {
         throw wrapError(error, 'send_message_failed')
+      }
+    })
+  }
+
+  /**
+   * Edit the text of a message this account sent (MODIFYMSG). KakaoTalk only
+   * accepts the author's own text messages within 24 hours of sending and
+   * reports anything else as a non-zero status, which is returned as
+   * `success: false` rather than thrown.
+   *
+   * Deliberately not wrapped in executeWithReconnect: every accepted edit
+   * bumps the message revision, so a request that may already have reached
+   * the server is never sent again on a fresh session.
+   */
+  async editMessage(chatId: string, logId: string, text: string): Promise<KakaoEditResult> {
+    const parsedChatId = parseChatId(chatId)
+    const parsedLogId = parseLogId(logId)
+    if (text.trim().length === 0) {
+      throw new KakaoTalkError('Edited message text must not be empty', 'invalid_message_text')
+    }
+
+    const { session } = await this.ensureSession()
+    try {
+      const response = await session.modifyMessage(parsedChatId, parsedLogId, text)
+      // The edit verdict lives in body.status (e.g. -212 once the 24-hour window
+      // has passed); a non-zero transport statusCode is the synthetic packet
+      // LocoConnection.handleClose resolves with, so the outcome is unknown.
+      const status =
+        response.statusCode !== 0
+          ? response.statusCode
+          : typeof response.body.status === 'number'
+            ? response.body.status
+            : 0
+      const edited = response.body.modifiedChatLog as { revision?: unknown; message?: unknown } | undefined
+      return {
+        success: status === 0,
+        status_code: status,
+        chat_id: chatId,
+        log_id: logId,
+        revision: edited?.revision !== undefined ? longToString(edited.revision) : null,
+        message: typeof edited?.message === 'string' ? edited.message : null,
+      }
+    } catch (error) {
+      throw wrapError(error, 'edit_message_failed')
+    }
+  }
+
+  /**
+   * Read each member's read watermark from CHATONROOM and, for each log id,
+   * count the members other than this account who have not read that far.
+   * That count is the number KakaoTalk shows next to your own message ("1").
+   * Without log ids the room's last log id is used.
+   *
+   * CHATONROOM is the request KakaoTalk sends when a room is opened, so the
+   * history and member commands avoid it. It is not NOTIREAD: node-kakao sends
+   * it whenever it loads a channel and marks messages read separately. Callers
+   * still opt in with `opts.enterRoom`.
+   */
+  async getReadState(chatId: string, logIds: string[], opts: { enterRoom: boolean }): Promise<KakaoReadStateResult> {
+    const parsedChatId = parseChatId(chatId)
+    for (const logId of logIds) parseLogId(logId)
+    if (!opts.enterRoom) {
+      throw new KakaoTalkError(
+        'Reading watermarks sends CHATONROOM (room entry). Pass enterRoom: true to confirm.',
+        'room_entry_not_confirmed',
+      )
+    }
+
+    return this.executeWithReconnect(async ({ session }) => {
+      try {
+        const response = await session.getChatInfo(parsedChatId)
+        assertLocoOk(response, 'CHATONROOM')
+        const userIds = response.body.a
+        const watermarks = response.body.w
+        if (!Array.isArray(userIds) || !Array.isArray(watermarks) || userIds.length !== watermarks.length) {
+          throw new KakaoTalkError('CHATONROOM response missing member watermarks', 'read_state_unavailable')
+        }
+
+        const members = userIds.map((userId, index) => ({
+          user_id: longToString(userId),
+          watermark: longToString(watermarks[index]),
+        }))
+        const lastLogId =
+          response.body.l !== undefined && response.body.l !== null ? longToString(response.body.l) : null
+        const targets = logIds.length > 0 ? logIds : lastLogId ? [lastLogId] : []
+        const others = members.filter((member) => member.user_id !== this.userId)
+
+        return {
+          chat_id: chatId,
+          last_log_id: lastLogId,
+          watermarks: members,
+          messages: targets.map((logId) => {
+            const target = BigInt(logId)
+            const read = others.filter((member) => BigInt(member.watermark) >= target).map((member) => member.user_id)
+            const unread = others.filter((member) => BigInt(member.watermark) < target).map((member) => member.user_id)
+            return { log_id: logId, unread_count: unread.length, read_user_ids: read, unread_user_ids: unread }
+          }),
+        }
+      } catch (error) {
+        throw wrapError(error, 'read_state_failed')
       }
     })
   }

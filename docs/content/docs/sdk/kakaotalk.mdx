@@ -176,6 +176,27 @@ await client.sendAttachment('9876543210', [
 
 The typed helpers `sendPhoto`, `sendVideo`, `sendAudio`, `sendFile`, and `sendMultiPhoto` remain available when you want to bypass MIME sniffing and dispatch to a specific message_type explicitly.
 
+### Editing
+
+```typescript
+// Edit the text of a message this account sent (within 24 hours)
+const result = await client.editMessage('9876543210', sent.log_id, 'Corrected text')
+// → KakaoEditResult { success, status_code, chat_id, log_id, revision, message }
+```
+
+Sends a LOCO `MODIFYMSG`. KakaoTalk only accepts your own messages within 24 hours of sending, and this method edits plain text messages only; refusals come back as `success: false` with the server's `status_code` instead of throwing. The request is sent exactly once and is never retried on a fresh session, because every accepted edit raises the message `revision`. A dropped connection yields `status_code: -1` (outcome unknown). Non-numeric `chatId` / `logId` throw `invalid_chat_id` / `invalid_log_id`, blank text throws `invalid_message_text`, and transport errors throw `KakaoTalkError('edit_message_failed')`.
+
+### Read Receipts
+
+```typescript
+// How many members have not read these messages (the "1" next to them)
+const state = await client.getReadState('9876543210', [sent.log_id], { enterRoom: true })
+// → KakaoReadStateResult { chat_id, last_log_id, watermarks, messages }
+// messages[0] → { log_id, unread_count, read_user_ids, unread_user_ids }
+```
+
+Reads each member's watermark from LOCO `CHATONROOM` and counts, per log ID, the members other than this account whose watermark is below it. Pass an empty array to check the room's last message. `CHATONROOM` is the room-entry request that the history and member APIs avoid; it is not `NOTIREAD` and does not mark messages read, but the call throws `room_entry_not_confirmed` unless `enterRoom: true` is passed. A response without watermarks throws `read_state_unavailable`, and transport errors throw `KakaoTalkError('read_state_failed')`.
+
 ### Leave Chat
 
 ```typescript
@@ -358,6 +379,8 @@ import type {
   KakaoMember,
   KakaoMessage,
   KakaoSendResult,
+  KakaoEditResult,
+  KakaoReadStateResult,
   KakaoTypingResult,
   KakaoAccountCredentials,
   KakaoConfig,
@@ -376,6 +399,8 @@ import {
   KakaoMemberSchema,
   KakaoMessageSchema,
   KakaoSendResultSchema,
+  KakaoEditResultSchema,
+  KakaoReadStateResultSchema,
   KakaoTypingResultSchema,
   KakaoAccountCredentialsSchema,
   KakaoConfigSchema,
