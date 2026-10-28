@@ -1,5 +1,11 @@
 export { TeamsClient } from './client'
-export { appendAttachmentTags, attachmentIdFromETag, referenceAttachments } from './attachments'
+export {
+  appendAttachmentTags,
+  attachmentIdFromETag,
+  messageReferenceAttachment,
+  prependQuoteTag,
+  referenceAttachments,
+} from './attachments'
 export { TeamsCredentialManager } from './credential-manager'
 export { TeamsTokenProvider } from './token-provider'
 export {
@@ -29,6 +35,7 @@ export type {
   TeamsMessageFormat,
   TeamsRealtimeMessage,
   TeamsReaction,
+  TeamsMessageReferenceAttachment,
   TeamsReferenceAttachment,
   TeamsSendMessageOptions,
   TeamsSearchResult,
