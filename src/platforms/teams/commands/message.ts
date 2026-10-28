@@ -12,8 +12,8 @@ import { resolveFormat } from './format'
 export async function sendAction(
   teamId: string,
   channelId: string,
-  content: string,
-  options: { pretty?: boolean; thread?: string; format?: string },
+  content = '',
+  options: { pretty?: boolean; thread?: string; format?: string; files?: string[] },
 ): Promise<void> {
   const format = resolveFormat(options.format, options.pretty)
 
@@ -32,7 +32,9 @@ export async function sendAction(
       accountType: cred.accountType,
       region: cred.region,
     })
-    const message = await client.sendMessage(teamId, channelId, content, options.thread, format)
+    const message = options.files?.length
+      ? await client.sendMessage(teamId, channelId, content, options.thread, format, { files: options.files })
+      : await client.sendMessage(teamId, channelId, content, options.thread, format)
 
     const output = {
       ...message,
@@ -280,9 +282,15 @@ export const messageCommand = new Command('message')
       .description('Send message to channel (--thread <message-id> replies to a thread)')
       .argument('<team-id>', 'Team ID')
       .argument('<channel-id>', 'Channel ID')
-      .argument('<content>', 'Message content')
+      .argument('[content]', 'Message content (optional when using --file)')
       .option('--thread <message-id>', 'Reply to a thread root message')
       .option('--format <format>', 'Message format: text, markdown, or html', 'text')
+      .option(
+        '--file <path>',
+        'Attach a file (repeatable)',
+        (value: string, previous: string[]) => [...previous, value],
+        [],
+      )
       .option('--pretty', 'Pretty print JSON output')
       .action(sendAction),
   )

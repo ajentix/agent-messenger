@@ -1,4 +1,11 @@
 export { TeamsClient } from './client'
+export {
+  appendAttachmentTags,
+  attachmentIdFromETag,
+  messageReferenceAttachment,
+  prependQuoteTag,
+  referenceAttachments,
+} from './attachments'
 export { TeamsCredentialManager } from './credential-manager'
 export { TeamsTokenProvider } from './token-provider'
 export {
@@ -14,7 +21,10 @@ export { TeamsAuthCapabilityError, TeamsError } from './types'
 export type {
   TeamsAccount,
   TeamsAccountType,
+  TeamsAttachment,
+  TeamsAttachmentRecord,
   TeamsChannel,
+  TeamsChatFileAttachment,
   TeamsConfig,
   TeamsConfigLegacy,
   TeamsCredentials,
@@ -25,6 +35,9 @@ export type {
   TeamsMessageFormat,
   TeamsRealtimeMessage,
   TeamsReaction,
+  TeamsMessageReferenceAttachment,
+  TeamsReferenceAttachment,
+  TeamsSendMessageOptions,
   TeamsSearchResult,
   TeamsTeam,
   TeamsTrouterGenericEvent,

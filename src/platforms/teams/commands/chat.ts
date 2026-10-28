@@ -79,8 +79,8 @@ export async function historyAction(
 
 export async function sendAction(
   chatId: string,
-  content: string,
-  options: { pretty?: boolean; format?: string },
+  content = '',
+  options: { pretty?: boolean; format?: string; files?: string[]; quote?: string },
 ): Promise<void> {
   const format = resolveFormat(options.format, options.pretty)
 
@@ -99,7 +99,13 @@ export async function sendAction(
       accountType: cred.accountType,
       region: cred.region,
     })
-    const message = await client.sendChatMessage(chatId, content, format)
+    const message =
+      options.files?.length || options.quote
+        ? await client.sendChatMessage(chatId, content, format, {
+            ...(options.files?.length ? { files: options.files } : {}),
+            ...(options.quote ? { quote: options.quote } : {}),
+          })
+        : await client.sendChatMessage(chatId, content, format)
 
     const output = {
       ...message,
@@ -181,8 +187,15 @@ export const chatCommand = new Command('chat')
     new Command('send')
       .description('Send a message to a chat')
       .argument('<chat-id>', 'Chat ID')
-      .argument('<content>', 'Message content')
+      .argument('[content]', 'Message content (optional when using --file)')
       .option('--format <format>', 'Message format: text, markdown, or html', 'text')
+      .option(
+        '--file <path>',
+        'Attach a file (repeatable)',
+        (value: string, previous: string[]) => [...previous, value],
+        [],
+      )
+      .option('--quote <message-id>', 'Quote a message in the same chat, as a Teams reply does')
       .option('--pretty', 'Pretty print JSON output')
       .action(sendAction),
   )

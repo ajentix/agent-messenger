@@ -137,6 +137,8 @@ Output includes the authenticated user's identity information.
 # Send a message
 agent-teams message send <channel-id> <content>
 agent-teams message send abc123-def456 "Hello world"
+agent-teams message send <team-id> <channel-id> "Report attached" --file ./report.pdf --file ./data.xlsx
+agent-teams message send <team-id> <channel-id> --thread <root-message-id> --file ./report.pdf
 
 # List messages
 agent-teams message list <channel-id>
@@ -151,6 +153,19 @@ agent-teams message delete <channel-id> <message-id> --force
 # Reply to a message (thread)
 agent-teams message reply <channel-id> <message-id> "Reply content"
 ```
+
+### Chat Commands
+
+```bash
+agent-teams chat send <chat-id> "Hello"
+agent-teams chat send <chat-id> "Report attached" --file ./report.pdf
+agent-teams chat send <chat-id> --file ./report.pdf --file ./archive.zip
+agent-teams chat send <chat-id> --quote <message-id> --file ./report.pdf
+```
+
+`message send` and `chat send` accept repeatable `--file <path>` options, with up to 10 files per message. The message text may be omitted when at least one file is attached. Channel attachments are stored in the channel files folder. Chat attachments are stored in the sender's OneDrive under `Microsoft Teams Chat Files`, and only the other members of that chat receive read access. No anonymous or organization-wide sharing link is created.
+
+`chat send --quote <message-id>` quotes a message from the same chat, as the Teams Reply action does. The quoted message is looked up first, so a wrong or deleted ID stops before any file is uploaded. A quote can be combined with files, and the text may then be omitted.
 
 ### Channel Commands
 
