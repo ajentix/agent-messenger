@@ -70,12 +70,24 @@ describe('TeamsClient attachment uploads', () => {
     return value
   }
 
+  const ME = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+  const MEMBER = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
+  const OTHER = 'cccccccc-cccc-cccc-cccc-cccccccccccc'
+
   it('uploads a small chat file with rename behavior and invites members once', async () => {
     const file = join(tempDir, 'report.pdf')
     await writeFile(file, 'pdf')
     responses.push(
-      json({ id: 'me' }),
-      json({ value: [{ userId: 'me' }, { userId: 'member' }, { email: 'mail@example.com' }] }),
+      json({ id: ME }),
+      json({
+        id: 'chat',
+        members: [
+          { id: `8:orgid:${ME.toUpperCase()}` },
+          { id: `8:orgid:${MEMBER}` },
+          { id: '28:bot-app' },
+          { id: `8:orgid:${OTHER}` },
+        ],
+      }),
       json({ id: 'drive' }),
       json({ id: 'item' }),
       json({
@@ -89,24 +101,42 @@ describe('TeamsClient attachment uploads', () => {
       json({}),
     )
     const record = await (await client()).uploadChatFile('chat', file)
-    expect(record.shared_with).toEqual(['member', 'mail@example.com'])
+    expect(record.shared_with).toEqual([MEMBER, OTHER])
+    expect(calls[1].url).toBe('https://emea.ng.msg.teams.microsoft.com/v1/threads/chat')
+    expect(calls[1].options?.headers).toMatchObject({ 'X-Skypetoken': 'skype' })
+    expect(calls.some((call) => call.url.includes('/chats/'))).toBe(false)
     expect(calls[3].url).toContain('/me/drive/root:/Microsoft%20Teams%20Chat%20Files/report.pdf:/content?')
     expect(calls[3].url).toContain('conflictBehavior=rename')
     expect(JSON.parse(String(calls[5].options?.body))).toEqual({
       requireSignIn: true,
       sendInvitation: false,
       roles: ['read'],
-      recipients: [{ objectId: 'member' }, { email: 'mail@example.com' }],
+      recipients: [{ objectId: MEMBER }, { objectId: OTHER }],
     })
   })
 
   it('stops before uploading when a chat member cannot be resolved', async () => {
     const file = join(tempDir, 'report.pdf')
     await writeFile(file, 'pdf')
-    responses.push(json({ id: 'me' }), json({ value: [{ userId: 'me' }, { displayName: 'Guest' }] }))
-    await expect((await client()).uploadChatFile('chat', file)).rejects.toThrow('A chat member has no userId or email.')
+    responses.push(
+      json({ id: ME }),
+      json({ id: 'chat', members: [{ id: `8:orgid:${ME}` }, { id: '8:guest:visitor' }] }),
+    )
+    await expect((await client()).uploadChatFile('chat', file)).rejects.toThrow(
+      'A chat member cannot be resolved: 8:guest:visitor',
+    )
     expect(calls).toHaveLength(2)
     expect(calls.some((call) => call.url.includes('/content') || call.url.includes('createUploadSession'))).toBe(false)
+  })
+
+  it('stops before uploading when the roster belongs to another chat', async () => {
+    const file = join(tempDir, 'report.pdf')
+    await writeFile(file, 'pdf')
+    responses.push(json({ id: ME }), json({ id: 'other-chat', members: [{ id: `8:orgid:${MEMBER}` }] }))
+    await expect((await client()).uploadChatFile('chat', file)).rejects.toThrow(
+      'The chat roster did not match the target chat.',
+    )
+    expect(calls).toHaveLength(2)
   })
 
   it('skips member lookup and invites for the self notes chat', async () => {
@@ -124,7 +154,9 @@ describe('TeamsClient attachment uploads', () => {
     )
     const record = await (await client()).uploadChatFile('48:notes', file)
     expect(record.shared_with).toEqual([])
-    expect(calls.map((call) => call.url).some((url) => url.includes('/members') || url.endsWith('/invite'))).toBe(false)
+    expect(calls.map((call) => call.url).some((url) => url.includes('/threads/') || url.endsWith('/invite'))).toBe(
+      false,
+    )
   })
 
   it('uploads a channel attachment into the channel folder with rename behavior', async () => {
@@ -155,8 +187,8 @@ describe('TeamsClient attachment uploads', () => {
     const file = join(tempDir, 'large.bin')
     await writeFile(file, Buffer.alloc(4 * 1024 * 1024 + 1, 1))
     responses.push(
-      json({ id: 'me' }),
-      json({ value: [] }),
+      json({ id: ME }),
+      json({ id: 'chat', members: [{ id: `8:orgid:${ME}` }] }),
       json({ id: 'drive' }),
       json({ uploadUrl: 'https://upload.test/session' }),
       new Response(null, { status: 500 }),
@@ -173,8 +205,8 @@ describe('TeamsClient attachment uploads', () => {
     const total = 4 * 1024 * 1024 + 1
     await writeFile(file, Buffer.alloc(total, 1))
     responses.push(
-      json({ id: 'me' }),
-      json({ value: [] }),
+      json({ id: ME }),
+      json({ id: 'chat', members: [{ id: `8:orgid:${ME}` }] }),
       json({ id: 'drive' }),
       json({ uploadUrl: 'https://upload.test/session' }),
       new Response(null, { status: 202 }),

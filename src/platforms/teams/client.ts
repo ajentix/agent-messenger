@@ -1017,21 +1017,27 @@ export class TeamsClient {
     for (const filePath of filePaths) await this.validateAttachmentFile(filePath)
   }
 
+  // Graph /chats/{id}/members needs Chat.Read-family scopes the Teams token
+  // does not carry, so the roster comes from the chat service thread instead.
   private async resolveChatRecipients(chatId: string): Promise<ChatRecipient[]> {
     if (chatId === '48:notes') return []
     const me = await this.graph().request<{ id?: string }>('GET', '/me?$select=id')
-    const members = await this.graph().collection(`/chats/${segment(chatId)}/members`)
+    if (!me.id) throw new TeamsError('The signed-in user id is unavailable.', 'chat_member_unresolved')
+    const thread = await this.request<{ id?: string; members?: Array<{ id?: string }> }>(
+      'GET',
+      `/threads/${segment(chatId)}`,
+    )
+    if (thread.id !== chatId || !Array.isArray(thread.members))
+      throw new TeamsError('The chat roster did not match the target chat.', 'chat_member_unresolved')
     const recipients: ChatRecipient[] = []
-    for (const member of members) {
-      const userId = typeof member.userId === 'string' && member.userId ? member.userId : undefined
-      if (userId && userId === me.id) continue
-      const email = typeof member.email === 'string' && member.email ? member.email : undefined
-      if (!userId && !email) throw new TeamsError('A chat member has no userId or email.', 'chat_member_unresolved')
-      recipients.push(
-        userId
-          ? { identifier: userId, invite: { objectId: userId } }
-          : { identifier: email!, invite: { email: email! } },
-      )
+    for (const member of thread.members) {
+      const mri = typeof member.id === 'string' ? member.id : ''
+      if (mri.startsWith('28:')) continue
+      const objectId = mri.match(/^8:orgid:([0-9a-f-]{36})$/i)?.[1]
+      if (!objectId)
+        throw new TeamsError(`A chat member cannot be resolved: ${mri || 'unknown'}`, 'chat_member_unresolved')
+      if (objectId.toLowerCase() === me.id.toLowerCase()) continue
+      recipients.push({ identifier: objectId, invite: { objectId } })
     }
     return recipients
   }
