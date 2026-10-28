@@ -261,6 +261,7 @@ agent-teams chat history <chat-id> --limit 100
 agent-teams chat send <chat-id> "Hello"
 agent-teams chat send <chat-id> "**Important**: see the [board](https://example.com)" --format markdown
 agent-teams chat send <chat-id> "Report attached" --file ./report.pdf
+agent-teams chat send <chat-id> --quote <message-id> --file ./report.pdf   # quote a message in the same chat
 agent-teams chat send <chat-id> --file ./report.pdf --file ./archive.zip
 
 # Edit one of your own chat messages

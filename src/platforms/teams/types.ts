@@ -35,6 +35,7 @@ export interface TeamsMessage {
   attachments?: unknown[]
   edited_at?: string
   deleted_at?: string
+  quoted_message_id?: string
   raw?: Record<string, unknown>
 }
 
@@ -122,6 +123,14 @@ export type TeamsMessageFormat = 'text' | 'markdown' | 'html'
 
 export interface TeamsSendMessageOptions {
   files?: string[]
+  /** Message ID in the same chat to quote, as Teams does for a reply. */
+  quote?: string
+}
+
+export interface TeamsMessageReferenceAttachment {
+  id: string
+  contentType: 'messageReference'
+  content: string
 }
 
 export type TeamsAuthMethod = 'device-code' | 'browser' | 'extracted' | 'manual'

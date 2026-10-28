@@ -5,7 +5,13 @@ import { basename } from 'node:path'
 import { escapeHtml, markdownToHtml } from '@/shared/utils/markdown-to-html'
 
 import { SUBSTRATE_SEARCH_URL } from './app-config'
-import { appendAttachmentTags, attachmentIdFromETag, referenceAttachments } from './attachments'
+import {
+  appendAttachmentTags,
+  attachmentIdFromETag,
+  messageReferenceAttachment,
+  prependQuoteTag,
+  referenceAttachments,
+} from './attachments'
 import { TeamsCredentialManager } from './credential-manager'
 import { TeamsGraph, graphMessage, graphTeam, graphChannel, graphUser, graphFile, segment, messageText } from './graph'
 import { sanitizeTeamsHtml } from './html-sanitizer'
@@ -728,17 +734,26 @@ export class TeamsClient {
   ): Promise<TeamsMessage> {
     const files = options?.files ?? []
     this.validateMessageFiles(content, files)
-    if (files.length > 0) {
-      await this.validateAttachmentFiles(files)
-      const recipients = await this.resolveChatRecipients(chatId)
+    // Resolve the quoted message before uploading anything, so a wrong ID never leaves files behind.
+    const quoted = options?.quote ? await this.findChatMessage(chatId, options.quote) : undefined
+    if (files.length > 0 || quoted) {
+      if (files.length > 0) await this.validateAttachmentFiles(files)
       const records: TeamsAttachment[] = []
-      for (const filePath of files) records.push(await this.uploadChatFileResolved(filePath, recipients))
-      const html = appendAttachmentTags(formatContent(content, format), records)
+      if (files.length > 0) {
+        const recipients = await this.resolveChatRecipients(chatId)
+        for (const filePath of files) records.push(await this.uploadChatFileResolved(filePath, recipients))
+      }
+      let html = appendAttachmentTags(content ? formatContent(content, format) : '', records)
+      if (quoted) html = prependQuoteTag(html, quoted.id)
       const raw = await this.graph().request('POST', `/chats/${segment(chatId)}/messages`, {
         body: { contentType: 'html', content: html },
-        attachments: referenceAttachments(records),
+        attachments: [...(quoted ? [messageReferenceAttachment(quoted)] : []), ...referenceAttachments(records)],
       })
-      return { ...graphMessage(raw, chatId), attachments: records }
+      return {
+        ...graphMessage(raw, chatId),
+        attachments: records,
+        ...(quoted ? { quoted_message_id: quoted.id } : {}),
+      }
     }
 
     interface SendResponse {
@@ -759,6 +774,24 @@ export class TeamsClient {
       content,
       timestamp: arrivalTime ? new Date(arrivalTime).toISOString() : new Date().toISOString(),
     }
+  }
+
+  /** Find one message in a chat by ID through Chat Service, newest pages first. */
+  async findChatMessage(chatId: string, messageId: string, maxPages = 5): Promise<TeamsMessage> {
+    if (!/^\d+$/.test(messageId)) throw new TeamsError('Quoted message ID must be numeric.', 'quote_invalid_id')
+    let cursor: string | undefined
+    for (let page = 0; page < maxPages; page++) {
+      const result = await this.getChatMessagesPage(chatId, 100, cursor)
+      const found = result.messages.find((message) => message.id === messageId)
+      if (found) {
+        if (found.deleted_at || (found.raw as { properties?: { deletetime?: unknown } } | undefined)?.properties?.deletetime)
+          throw new TeamsError('Quoted message was deleted.', 'quote_deleted')
+        return found
+      }
+      if (!result.next_cursor) break
+      cursor = result.next_cursor
+    }
+    throw new TeamsError('Quoted message was not found in this chat.', 'quote_not_found')
   }
 
   async editChatMessage(
