@@ -88,6 +88,8 @@ describe('TeamsClient attachment uploads', () => {
           { id: `8:orgid:${OTHER}` },
         ],
       }),
+      json({ id: MEMBER, accountEnabled: true }),
+      json({ id: OTHER, accountEnabled: true }),
       json({ id: 'drive' }),
       json({ id: 'item' }),
       json({
@@ -105,14 +107,52 @@ describe('TeamsClient attachment uploads', () => {
     expect(calls[1].url).toBe('https://emea.ng.msg.teams.microsoft.com/v1/threads/chat')
     expect(calls[1].options?.headers).toMatchObject({ 'X-Skypetoken': 'skype' })
     expect(calls.some((call) => call.url.includes('/chats/'))).toBe(false)
-    expect(calls[3].url).toContain('/me/drive/root:/Microsoft%20Teams%20Chat%20Files/report.pdf:/content?')
-    expect(calls[3].url).toContain('conflictBehavior=rename')
-    expect(JSON.parse(String(calls[5].options?.body))).toEqual({
+    expect(calls[2].url).toContain(`/users/${MEMBER}?`)
+    expect(calls[5].url).toContain('/me/drive/root:/Microsoft%20Teams%20Chat%20Files/report.pdf:/content?')
+    expect(calls[5].url).toContain('conflictBehavior=rename')
+    expect(JSON.parse(String(calls[7].options?.body))).toEqual({
       requireSignIn: true,
       sendInvitation: false,
       roles: ['read'],
       recipients: [{ objectId: MEMBER }, { objectId: OTHER }],
     })
+  })
+
+  it('skips disabled accounts that stay in the chat roster', async () => {
+    const file = join(tempDir, 'report.pdf')
+    await writeFile(file, 'pdf')
+    responses.push(
+      json({ id: ME }),
+      json({ id: 'chat', members: [{ id: `8:orgid:${ME}` }, { id: `8:orgid:${MEMBER}` }, { id: `8:orgid:${OTHER}` }] }),
+      json({ id: MEMBER, accountEnabled: false }),
+      json({ id: OTHER, accountEnabled: true }),
+      json({ id: 'drive' }),
+      json({ id: 'item' }),
+      json({ id: 'item', name: 'report.pdf', eTag: '"{11111111-1111-1111-1111-111111111111},3"', webDavUrl: 'https://dav/r.pdf' }),
+      json({}),
+    )
+    const record = await (await client()).uploadChatFile('chat', file)
+    expect(record.shared_with).toEqual([OTHER])
+    expect(JSON.parse(String(calls.at(-1)!.options?.body)).recipients).toEqual([{ objectId: OTHER }])
+  })
+
+  it('deletes the uploaded copy when sharing fails, so a retry does not leave a duplicate', async () => {
+    const file = join(tempDir, 'report.pdf')
+    await writeFile(file, 'pdf')
+    responses.push(
+      json({ id: ME }),
+      json({ id: 'chat', members: [{ id: `8:orgid:${ME}` }, { id: `8:orgid:${MEMBER}` }] }),
+      json({ id: MEMBER, accountEnabled: true }),
+      json({ id: 'drive' }),
+      json({ id: 'item' }),
+      json({ id: 'item', name: 'report.pdf', eTag: '"{11111111-1111-1111-1111-111111111111},3"', webDavUrl: 'https://dav/r.pdf' }),
+      json({ error: { message: 'One or more users could not be resolved' } }, 400),
+      new Response(null, { status: 204 }),
+    )
+    await expect((await client()).uploadChatFile('chat', file)).rejects.toThrow()
+    const last = calls.at(-1)!
+    expect(last.options?.method).toBe('DELETE')
+    expect(last.url).toContain('/drives/drive/items/item')
   })
 
   it('stops before uploading when a chat member cannot be resolved', async () => {

@@ -1070,6 +1070,15 @@ export class TeamsClient {
       if (!objectId)
         throw new TeamsError(`A chat member cannot be resolved: ${mri || 'unknown'}`, 'chat_member_unresolved')
       if (objectId.toLowerCase() === me.id.toLowerCase()) continue
+      // A disabled account stays in the roster but makes the whole SharePoint invite fail
+      // ("One or more users could not be resolved"). It cannot sign in, so it is skipped.
+      const user = await this.graph().request<{ id?: string; accountEnabled?: boolean }>(
+        'GET',
+        `/users/${segment(objectId)}?$select=id,accountEnabled`,
+      )
+      if (user.id?.toLowerCase() !== objectId.toLowerCase())
+        throw new TeamsError(`A chat member cannot be resolved: ${mri}`, 'chat_member_unresolved')
+      if (user.accountEnabled === false) continue
       recipients.push({ identifier: objectId, invite: { objectId } })
     }
     return recipients
@@ -1192,7 +1201,15 @@ export class TeamsClient {
     const drive = await this.graph().request<{ id?: string }>('GET', '/me/drive?$select=id')
     if (!drive.id) throw new TeamsError('OneDrive is unavailable.', 'drive_missing')
     const attachment = await this.uploadDriveAttachment(drive.id, '', filePath, CHAT_FILES_FOLDER)
-    await this.inviteChatRecipients(drive.id, attachment.item_id, recipients)
+    try {
+      await this.inviteChatRecipients(drive.id, attachment.item_id, recipients)
+    } catch (error) {
+      // Leave no unshared copy behind; a retry would otherwise upload a renamed duplicate.
+      await this.graph()
+        .request('DELETE', `/drives/${segment(drive.id)}/items/${segment(attachment.item_id)}`)
+        .catch(() => undefined)
+      throw error
+    }
     return { ...attachment, shared_with: recipients.map((recipient) => recipient.identifier) }
   }
 
