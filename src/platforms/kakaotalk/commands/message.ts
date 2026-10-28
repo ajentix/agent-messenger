@@ -61,6 +61,22 @@ async function editAction(
   }
 }
 
+async function unreadAction(
+  chatId: string,
+  logIds: string[],
+  options: { account?: string; pretty?: boolean; enterRoom?: boolean },
+): Promise<void> {
+  try {
+    if (!options.enterRoom) {
+      throw new Error('Reading watermarks sends CHATONROOM (room entry). Pass --enter-room to confirm.')
+    }
+    const result = await withKakaoClient(options, (client) => client.getReadState(chatId, logIds, { enterRoom: true }))
+    console.log(formatOutput(result, options.pretty))
+  } catch (error) {
+    handleError(error as Error)
+  }
+}
+
 // A reply attachment needs the source message's author, text, and type — not
 // just its log_id — so we look it up in the chat's recent history.
 async function resolveReplyTarget(
@@ -182,6 +198,18 @@ export const messageCommand = new Command('message')
       .option('--account <id>', 'Use a specific KakaoTalk account')
       .option('--pretty', 'Pretty print JSON output')
       .action(editAction),
+  )
+  .addCommand(
+    new Command('unread')
+      .description(
+        'Show how many members have not read a message (the "1" next to it). Sends CHATONROOM, so --enter-room is required',
+      )
+      .argument('<chat-id>', 'Chat room ID')
+      .argument('[log-ids...]', 'Log IDs to check (default: the last message in the room)')
+      .option('--enter-room', 'Confirm sending CHATONROOM (room entry) to read member watermarks')
+      .option('--account <id>', 'Use a specific KakaoTalk account')
+      .option('--pretty', 'Pretty print JSON output')
+      .action(unreadAction),
   )
   .addCommand(
     new Command('upload')

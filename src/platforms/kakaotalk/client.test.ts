@@ -124,6 +124,9 @@ const DEFAULT_LOGIN_RESULT = {
 
 const originalConfigDir = process.env['AGENT_MESSENGER_CONFIG_DIR']
 
+// Only getReadState may send CHATONROOM; every other test asserts it never does.
+let chatOnRoomExpected = false
+
 describe('KakaoTalkClient', () => {
   let configDir: string
 
@@ -141,8 +144,9 @@ describe('KakaoTalkClient', () => {
 
   afterEach(async () => {
     try {
-      expect(mockGetChatInfo).not.toHaveBeenCalled()
+      if (!chatOnRoomExpected) expect(mockGetChatInfo).not.toHaveBeenCalled()
     } finally {
+      chatOnRoomExpected = false
       resetAllMocks()
       if (originalConfigDir === undefined) delete process.env['AGENT_MESSENGER_CONFIG_DIR']
       else process.env['AGENT_MESSENGER_CONFIG_DIR'] = originalConfigDir
@@ -2475,6 +2479,136 @@ describe('KakaoTalkClient', () => {
         expect((e as KakaoTalkError).code).toBe('invalid_message_text')
       }
       expect(mockModifyMessage).not.toHaveBeenCalled()
+
+      client.close()
+    })
+  })
+
+  describe('getReadState', () => {
+    beforeEach(() => {
+      chatOnRoomExpected = true
+    })
+
+    function chatOnRoom(members: Array<[number, number]>, lastLogId = 50) {
+      return {
+        statusCode: 0,
+        body: {
+          status: 0,
+          c: makeLong(100),
+          l: makeLong(lastLogId),
+          a: members.map(([userId]) => makeLong(userId)),
+          w: members.map(([, watermark]) => makeLong(watermark)),
+        },
+      }
+    }
+
+    it('counts members other than this account whose watermark is below each log id', async () => {
+      // given: this account (1) read everything, member 2 read up to 45, member 3 up to 50
+      mockGetChatInfo.mockResolvedValueOnce(
+        chatOnRoom([
+          [1, 50],
+          [2, 45],
+          [3, 50],
+        ]),
+      )
+      const client = await new KakaoTalkClient().login({ oauthToken: 'token', userId: '1', deviceUuid: 'device1' })
+
+      // when
+      const result = await client.getReadState('100', ['45', '50'], { enterRoom: true })
+
+      // then
+      expect(mockGetChatInfo).toHaveBeenCalledTimes(1)
+      const [chatIdArg] = mockGetChatInfo.mock.calls[0] as [{ toString(): string }]
+      expect(chatIdArg.toString()).toBe('100')
+      expect(result).toEqual({
+        chat_id: '100',
+        last_log_id: '50',
+        watermarks: [
+          { user_id: '1', watermark: '50' },
+          { user_id: '2', watermark: '45' },
+          { user_id: '3', watermark: '50' },
+        ],
+        messages: [
+          { log_id: '45', unread_count: 0, read_user_ids: ['2', '3'], unread_user_ids: [] },
+          { log_id: '50', unread_count: 1, read_user_ids: ['3'], unread_user_ids: ['2'] },
+        ],
+      })
+
+      client.close()
+    })
+
+    it('uses the room last log id when no log ids are given', async () => {
+      // given: a 1:1 room where the other member has not read the last message
+      mockGetChatInfo.mockResolvedValueOnce(
+        chatOnRoom([
+          [1, 50],
+          [2, 49],
+        ]),
+      )
+      const client = await new KakaoTalkClient().login({ oauthToken: 'token', userId: '1', deviceUuid: 'device1' })
+
+      // when
+      const result = await client.getReadState('100', [], { enterRoom: true })
+
+      // then
+      expect(result.messages).toEqual([{ log_id: '50', unread_count: 1, read_user_ids: [], unread_user_ids: ['2'] }])
+
+      client.close()
+    })
+
+    it('compares full 64-bit log ids and watermarks', async () => {
+      // given
+      const big = '4000000000000000123'
+      const bigLong = { low: Number(BigInt(big) & 0xffffffffn), high: Number(BigInt(big) >> 32n) }
+      mockGetChatInfo.mockResolvedValueOnce({
+        statusCode: 0,
+        body: { status: 0, l: bigLong, a: [makeLong(1), makeLong(2)], w: [bigLong, bigLong] },
+      })
+      const client = await new KakaoTalkClient().login({ oauthToken: 'token', userId: '1', deviceUuid: 'device1' })
+
+      // when
+      const result = await client.getReadState('100', [big], { enterRoom: true })
+
+      // then
+      expect(result.last_log_id).toBe(big)
+      expect(result.messages).toEqual([{ log_id: big, unread_count: 0, read_user_ids: ['2'], unread_user_ids: [] }])
+
+      client.close()
+    })
+
+    it('refuses to send CHATONROOM without enterRoom', async () => {
+      // given
+      const client = await new KakaoTalkClient().login({ oauthToken: 'token', userId: '1', deviceUuid: 'device1' })
+
+      // when / then
+      await expect(client.getReadState('100', [], { enterRoom: false })).rejects.toMatchObject({
+        code: 'room_entry_not_confirmed',
+      })
+      expect(mockGetChatInfo).not.toHaveBeenCalled()
+
+      client.close()
+    })
+
+    it('rejects non-numeric log ids before sending', async () => {
+      // given
+      const client = await new KakaoTalkClient().login({ oauthToken: 'token', userId: '1', deviceUuid: 'device1' })
+
+      // when / then
+      await expect(client.getReadState('100', ['abc'], { enterRoom: true })).rejects.toThrow()
+      expect(mockGetChatInfo).not.toHaveBeenCalled()
+
+      client.close()
+    })
+
+    it('fails closed when the response has no watermarks', async () => {
+      // given
+      mockGetChatInfo.mockResolvedValueOnce({ statusCode: 0, body: { status: 0, l: makeLong(50) } })
+      const client = await new KakaoTalkClient().login({ oauthToken: 'token', userId: '1', deviceUuid: 'device1' })
+
+      // when / then
+      await expect(client.getReadState('100', [], { enterRoom: true })).rejects.toMatchObject({
+        code: 'read_state_unavailable',
+      })
 
       client.close()
     })

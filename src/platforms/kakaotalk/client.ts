@@ -25,6 +25,7 @@ import {
   type KakaoMessagePage,
   type KakaoMultiPhotoExtra,
   type KakaoProfile,
+  type KakaoReadStateResult,
   type KakaoReplyExtra,
   type KakaoReplyTarget,
   type KakaoSendResult,
@@ -1463,6 +1464,63 @@ export class KakaoTalkClient {
     } catch (error) {
       throw wrapError(error, 'edit_message_failed')
     }
+  }
+
+  /**
+   * Read each member's read watermark from CHATONROOM and, for each log id,
+   * count the members other than this account who have not read that far.
+   * That count is the number KakaoTalk shows next to your own message ("1").
+   * Without log ids the room's last log id is used.
+   *
+   * CHATONROOM is the request KakaoTalk sends when a room is opened, so the
+   * history and member commands avoid it. It is not NOTIREAD: node-kakao sends
+   * it whenever it loads a channel and marks messages read separately. Callers
+   * still opt in with `opts.enterRoom`.
+   */
+  async getReadState(chatId: string, logIds: string[], opts: { enterRoom: boolean }): Promise<KakaoReadStateResult> {
+    const parsedChatId = parseChatId(chatId)
+    for (const logId of logIds) parseLogId(logId)
+    if (!opts.enterRoom) {
+      throw new KakaoTalkError(
+        'Reading watermarks sends CHATONROOM (room entry). Pass enterRoom: true to confirm.',
+        'room_entry_not_confirmed',
+      )
+    }
+
+    return this.executeWithReconnect(async ({ session }) => {
+      try {
+        const response = await session.getChatInfo(parsedChatId)
+        assertLocoOk(response, 'CHATONROOM')
+        const userIds = response.body.a
+        const watermarks = response.body.w
+        if (!Array.isArray(userIds) || !Array.isArray(watermarks) || userIds.length !== watermarks.length) {
+          throw new KakaoTalkError('CHATONROOM response missing member watermarks', 'read_state_unavailable')
+        }
+
+        const members = userIds.map((userId, index) => ({
+          user_id: longToString(userId),
+          watermark: longToString(watermarks[index]),
+        }))
+        const lastLogId =
+          response.body.l !== undefined && response.body.l !== null ? longToString(response.body.l) : null
+        const targets = logIds.length > 0 ? logIds : lastLogId ? [lastLogId] : []
+        const others = members.filter((member) => member.user_id !== this.userId)
+
+        return {
+          chat_id: chatId,
+          last_log_id: lastLogId,
+          watermarks: members,
+          messages: targets.map((logId) => {
+            const target = BigInt(logId)
+            const read = others.filter((member) => BigInt(member.watermark) >= target).map((member) => member.user_id)
+            const unread = others.filter((member) => BigInt(member.watermark) < target).map((member) => member.user_id)
+            return { log_id: logId, unread_count: unread.length, read_user_ids: read, unread_user_ids: unread }
+          }),
+        }
+      } catch (error) {
+        throw wrapError(error, 'read_state_failed')
+      }
+    })
   }
 
   async sendTyping(chatId: string, opts?: { linkId?: string }): Promise<KakaoTypingResult> {

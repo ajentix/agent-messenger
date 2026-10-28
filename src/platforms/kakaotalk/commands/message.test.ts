@@ -27,6 +27,18 @@ const mockEditMessage = mock(() =>
   }),
 )
 
+const mockGetReadState = mock(() =>
+  Promise.resolve({
+    chat_id: 'chat-123',
+    last_log_id: '50',
+    watermarks: [
+      { user_id: '1', watermark: '50' },
+      { user_id: '2', watermark: '49' },
+    ],
+    messages: [{ log_id: '50', unread_count: 1, read_user_ids: [], unread_user_ids: ['2'] }],
+  }),
+)
+
 const originalExit = process.exit
 
 const mockClient = {
@@ -34,6 +46,7 @@ const mockClient = {
   sendMessage: mockSendMessage,
   markRead: mockMarkRead,
   editMessage: mockEditMessage,
+  getReadState: mockGetReadState,
 }
 
 mock.module('./shared', () => ({
@@ -51,6 +64,7 @@ describe('message commands', () => {
     mockSendMessage.mockReset()
     mockMarkRead.mockReset()
     mockEditMessage.mockReset()
+    mockGetReadState.mockReset()
 
     mockWithKakaoClient.mockImplementation(async (_options: unknown, fn: (client: unknown) => Promise<unknown>) => {
       return fn(mockClient)
@@ -218,6 +232,48 @@ describe('message commands', () => {
       }
 
       expect(exitSpy).toHaveBeenCalledWith(1)
+    })
+  })
+
+  describe('unread', () => {
+    it('refuses to connect without --enter-room', async () => {
+      const exitSpy = mock((_code?: number): never => {
+        throw new Error('process.exit called')
+      })
+      process.exit = exitSpy as unknown as typeof process.exit
+
+      try {
+        await messageCommand.parseAsync(['unread', 'chat-123'], { from: 'user' })
+      } catch {
+        // process.exit stub throws to abort the action
+      }
+
+      expect(exitSpy).toHaveBeenCalledWith(1)
+      expect(mockWithKakaoClient).not.toHaveBeenCalled()
+      expect(mockGetReadState).not.toHaveBeenCalled()
+    })
+
+    it('calls getReadState with chat-id, log ids and enterRoom', async () => {
+      mockGetReadState.mockImplementation(() =>
+        Promise.resolve({
+          chat_id: 'chat-123',
+          last_log_id: '50',
+          watermarks: [
+            { user_id: '1', watermark: '50' },
+            { user_id: '2', watermark: '49' },
+          ],
+          messages: [
+            { log_id: '49', unread_count: 0, read_user_ids: ['2'], unread_user_ids: [] },
+            { log_id: '50', unread_count: 1, read_user_ids: [], unread_user_ids: ['2'] },
+          ],
+        }),
+      )
+
+      await messageCommand.parseAsync(['unread', 'chat-123', '49', '50', '--enter-room'], { from: 'user' })
+
+      expect(mockGetReadState).toHaveBeenCalledWith('chat-123', ['49', '50'], { enterRoom: true })
+      const output = JSON.parse(consoleLogSpy.mock.calls[0][0])
+      expect(output.messages.map((m: { unread_count: number }) => m.unread_count)).toEqual([0, 1])
     })
   })
 
