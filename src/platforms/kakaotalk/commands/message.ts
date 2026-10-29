@@ -4,6 +4,7 @@ import { basename, resolve } from 'node:path'
 import { Command } from 'commander'
 
 import { handleError } from '@/shared/utils/error-handler'
+import { assertReadableMessageLayout } from '@/shared/utils/message-layout'
 import { formatOutput } from '@/shared/utils/output'
 
 import type { KakaoMessage, KakaoReplyTarget } from '../types'
@@ -27,9 +28,11 @@ async function listAction(
 async function sendAction(
   chatId: string,
   text: string,
-  options: { account?: string; pretty?: boolean; replyTo?: string },
+  options: { account?: string; pretty?: boolean; replyTo?: string; allowDenseLayout?: boolean },
 ): Promise<void> {
   try {
+    // Refuse a dense multi-line message before any network call (see message-layout.ts).
+    assertReadableMessageLayout(text, { allowDense: options.allowDenseLayout })
     const result = await withKakaoClient(options, async (client) => {
       if (options.replyTo === undefined) {
         return client.sendMessage(chatId, text)
@@ -48,9 +51,10 @@ async function editAction(
   chatId: string,
   logId: string,
   text: string,
-  options: { account?: string; pretty?: boolean },
+  options: { account?: string; pretty?: boolean; allowDenseLayout?: boolean },
 ): Promise<void> {
   try {
+    assertReadableMessageLayout(text, { allowDense: options.allowDenseLayout })
     const result = await withKakaoClient(options, (client) => client.editMessage(chatId, logId, text))
     console.log(formatOutput(result, options.pretty))
     if (!result.success) {
@@ -186,6 +190,7 @@ export const messageCommand = new Command('message')
       .argument('<text>', 'Message text')
       .option('--account <id>', 'Use a specific KakaoTalk account')
       .option('--reply-to <log-id>', 'Send as a quoted reply to this message log ID')
+      .option('--allow-dense-layout', 'Send even if the opening line or list items lack a blank line before them')
       .option('--pretty', 'Pretty print JSON output')
       .action(sendAction),
   )
@@ -196,6 +201,7 @@ export const messageCommand = new Command('message')
       .argument('<log-id>', 'Log ID of the message to edit')
       .argument('<text>', 'New message text')
       .option('--account <id>', 'Use a specific KakaoTalk account')
+      .option('--allow-dense-layout', 'Edit even if the opening line or list items lack a blank line before them')
       .option('--pretty', 'Pretty print JSON output')
       .action(editAction),
   )

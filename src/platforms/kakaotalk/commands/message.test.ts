@@ -193,6 +193,65 @@ describe('message commands', () => {
     })
   })
 
+  describe('dense multi-line layout', () => {
+    const dense = 'Hello, two updates.\n1. First.\n2. Second.'
+
+    // commander keeps option values on the command object between parseAsync calls,
+    // so a --reply-to from an earlier test would otherwise leak into these sends.
+    beforeEach(() => {
+      for (const name of ['send', 'edit']) {
+        const command = messageCommand.commands.find((candidate) => candidate.name() === name)
+        command?.setOptionValue('replyTo', undefined)
+        command?.setOptionValue('allowDenseLayout', undefined)
+      }
+    })
+
+    it('refuses to send a dense message before any client call', async () => {
+      const originalExit = process.exit
+      const exitSpy = mock(() => {
+        throw new Error('process.exit called')
+      })
+      process.exit = exitSpy as unknown as typeof process.exit
+      try {
+        await messageCommand.parseAsync(['send', 'chat-123', dense], { from: 'user' })
+      } catch {
+        // process.exit stub throws to abort the action
+      } finally {
+        process.exit = originalExit
+      }
+
+      expect(mockWithKakaoClient).not.toHaveBeenCalled()
+      expect(mockSendMessage).not.toHaveBeenCalled()
+      expect(exitSpy).toHaveBeenCalled()
+    })
+
+    it('refuses a dense edit too', async () => {
+      const originalExit = process.exit
+      const exitSpy = mock(() => {
+        throw new Error('process.exit called')
+      })
+      process.exit = exitSpy as unknown as typeof process.exit
+      try {
+        await messageCommand.parseAsync(['edit', 'chat-123', '42', dense], { from: 'user' })
+      } catch {
+        // process.exit stub throws to abort the action
+      } finally {
+        process.exit = originalExit
+      }
+
+      expect(mockEditMessage).not.toHaveBeenCalled()
+    })
+
+    it('sends a blank-line laid out message and honours --allow-dense-layout', async () => {
+      await messageCommand.parseAsync(['send', 'chat-123', 'Hello, two updates.\n\n1. First.\n\n2. Second.'], {
+        from: 'user',
+      })
+      await messageCommand.parseAsync(['send', 'chat-123', dense, '--allow-dense-layout'], { from: 'user' })
+
+      expect(mockSendMessage).toHaveBeenCalledTimes(2)
+    })
+  })
+
   describe('edit', () => {
     it('calls editMessage with chat-id, log-id and the new text', async () => {
       await messageCommand.parseAsync(['edit', 'chat-123', '42', 'fixed text'], { from: 'user' })
