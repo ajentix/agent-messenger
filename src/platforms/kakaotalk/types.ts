@@ -203,20 +203,28 @@ export interface KakaoMultiPhotoExtra {
   expire?: number
 }
 
-// REPLY (type 26) extra. Field names verified against storycraft/node-kakao
-// (src/chat/attachment/reply.ts) and jhleekr/kakao.py: `Id` fields are
-// camelCase (src_logId, NOT src_log_id), and src_mentions/mentions are
-// required even when empty.
+export interface KakaoMention {
+  at: number[]
+  len: number
+  user_id: number
+}
+
+export interface KakaoSendMessageOptions {
+  replyTo?: KakaoReplyTarget
+  /** Room member IDs. The text must contain each member's @nickname. */
+  mentions?: string[]
+}
+
+// Official-client capture (2026-10-29): no attach_only/attach_type/src_mentions,
+// a 100-character source preview, and src_linkId: 0. Keep log IDs as strings
+// like existing reply extras so JSON.stringify does not lose 64-bit precision.
 export interface KakaoReplyExtra {
-  attach_only: boolean
-  attach_type: number
   src_logId: string
   src_userId: number
   src_message: string
   src_type: number
-  src_mentions: unknown[]
-  mentions: unknown[]
-  src_linkId?: string
+  mentions: KakaoMention[]
+  src_linkId: number
 }
 
 export interface KakaoReplyTarget {

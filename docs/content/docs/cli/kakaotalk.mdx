@@ -236,6 +236,20 @@ agent-kakaotalk message send <chat-id> "Hello" --account <account-id>
 agent-kakaotalk message upload <chat-id> ./photo.jpg --account <account-id>
 ```
 
+#### Mentions and quoted replies
+
+Repeat `--mention <user-id>` for each person. Use the exact `nickname` returned by `member list` for that room, including spaces (the room profile name in open chats), and include `@nickname` in the text. The client verifies room membership and every requested mention before sending a WRITE. Duplicate user IDs are merged.
+
+```bash
+agent-kakaotalk message send <chat-id> "@리트머스 유영준 확인 부탁드립니다." --mention 437696862
+agent-kakaotalk message send <chat-id> "@리트머스 유영준 @김민수 확인 부탁드립니다." --mention 437696862 --mention 8
+agent-kakaotalk message send <chat-id> "@리트머스 유영준 확인하였습니다." --mention 437696862 --reply-to 3961980999585314818
+```
+
+`--reply-to <log-id>` resolves the source from the latest 100 messages. An absent source fails without sending. The quote includes the first 100 characters of the source text and `src_linkId: 0`.
+
+Mentions use numeric `user_id`, `len` counts the nickname's characters including spaces, and `at` lists the 1-based `@` occurrence numbers in the whole text. For `@가 @나 @가`, 가 has `[1,3]` and 나 has `[2]`. Targets with identical room nicknames are rejected as ambiguous. Without mentions, plain text retains the original WRITE without `extra`.
+
 #### Sending Attachments
 
 `message upload` sends photos, videos, audio, and arbitrary files to a chat. The CLI sniffs the MIME type from the filename and dispatches to the matching KakaoTalk message type, so the common case is a single command and a file path:

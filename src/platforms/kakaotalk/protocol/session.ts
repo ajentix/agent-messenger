@@ -1,6 +1,6 @@
 import { Binary, Long } from 'bson'
 
-import { KAKAO_MESSAGE_TYPE, type KakaoDeviceType } from '../types'
+import { KAKAO_MESSAGE_TYPE, type KakaoDeviceType, type KakaoMention } from '../types'
 import {
   BOOKING_HOST,
   BOOKING_PORT,
@@ -71,6 +71,19 @@ export async function sendModifyMessagePacket(
   text: string,
 ): Promise<LocoPacket> {
   return connection.sendPacket(MODIFY_MESSAGE_METHOD, buildModifyMessageBody(chatId, logId, text))
+}
+
+// Shared WRITE boundary for text and replies, tested with a fake connection.
+export async function sendMessagePacket(
+  connection: { sendPacket: (method: string, body: Record<string, unknown>) => Promise<LocoPacket> },
+  chatId: Long,
+  text: string,
+  type: number = KAKAO_MESSAGE_TYPE.TEXT,
+  extra?: Record<string, unknown>,
+): Promise<LocoPacket> {
+  const body: Record<string, unknown> = { chatId, msg: text, type, noSeen: false }
+  if (extra !== undefined) body.extra = JSON.stringify(extra)
+  return connection.sendPacket('WRITE', body)
 }
 
 export class LocoSession {
@@ -179,14 +192,15 @@ export class LocoSession {
     return { host: checkin.host, port: checkin.port }
   }
 
-  async sendMessage(chatId: Long, text: string): Promise<LocoPacket> {
+  async sendMessage(chatId: Long, text: string, mentions?: KakaoMention[]): Promise<LocoPacket> {
     if (!this.connection) throw new Error('Not connected')
-    return this.connection.sendPacket('WRITE', {
+    return sendMessagePacket(
+      this.connection,
       chatId,
-      msg: text,
-      type: 1,
-      noSeen: false,
-    })
+      text,
+      KAKAO_MESSAGE_TYPE.TEXT,
+      mentions?.length ? { mentions } : undefined,
+    )
   }
 
   // Quoted reply — a WRITE with message_type 26 (REPLY) whose `extra` JSON
@@ -194,13 +208,7 @@ export class LocoSession {
   // `type` + `extra`; no extra top-level WRITE fields are needed.
   async sendReply(chatId: Long, text: string, extra: Record<string, unknown>): Promise<LocoPacket> {
     if (!this.connection) throw new Error('Not connected')
-    return this.connection.sendPacket('WRITE', {
-      chatId,
-      msg: text,
-      type: KAKAO_MESSAGE_TYPE.REPLY,
-      noSeen: false,
-      extra: JSON.stringify(extra),
-    })
+    return sendMessagePacket(this.connection, chatId, text, KAKAO_MESSAGE_TYPE.REPLY, extra)
   }
 
   // Edit the text of a message this account sent (MODIFYMSG). See

@@ -21,6 +21,7 @@ import {
   type KakaoMarkReadResult,
   type KakaoMember,
   type KakaoMemberSnapshot,
+  type KakaoMention,
   type KakaoMessage,
   type KakaoMessagePage,
   type KakaoMultiPhotoExtra,
@@ -29,6 +30,7 @@ import {
   type KakaoReplyExtra,
   type KakaoReplyTarget,
   type KakaoSendResult,
+  type KakaoSendMessageOptions,
   type KakaoTypingResult,
 } from './types'
 
@@ -770,16 +772,45 @@ function buildMessagePage(
   }
 }
 
-function buildReplyExtra(target: KakaoReplyTarget): KakaoReplyExtra {
+function buildMentions(text: string, userIds: string[], members: KakaoMember[]): KakaoMention[] {
+  const targets = [...new Set(userIds)].map((userId) => {
+    const member = members.find((candidate) => candidate.user_id === userId)
+    if (!member) throw new Error(`Mention user ${userId} is not a member of this chat`)
+    const numericId = Number(userId)
+    if (!Number.isSafeInteger(numericId) || numericId <= 0) throw new Error(`Invalid mention user ID: ${userId}`)
+    if (!member.nickname) throw new Error(`Mention user ${userId} has no room nickname`)
+    return {
+      nickname: member.nickname,
+      mention: { at: [] as number[], len: Array.from(member.nickname).length, user_id: numericId },
+    }
+  })
+  if (new Set(targets.map((target) => target.nickname)).size !== targets.length) {
+    throw new Error('Mention targets have the same room nickname; their mentions are ambiguous')
+  }
+  // The ordinal refers to @ occurrences in the whole text, not character offsets.
+  // Prefer the longest nickname when one room nickname prefixes another.
+  const byLength = [...targets].sort((a, b) => b.nickname.length - a.nickname.length)
+  let ordinal = 0
+  for (const match of text.matchAll(/@/g)) {
+    ordinal++
+    const target = byLength.find((candidate) => text.startsWith(candidate.nickname, match.index + 1))
+    target?.mention.at.push(ordinal)
+  }
+  for (const target of targets) {
+    if (!target.mention.at.length)
+      throw new Error(`Message must contain @${target.nickname} for mention user ${target.mention.user_id}`)
+  }
+  return targets.map((target) => target.mention)
+}
+
+function buildReplyExtra(target: KakaoReplyTarget, mentions: KakaoMention[] = []): KakaoReplyExtra {
   return {
-    attach_only: false,
-    attach_type: target.type,
-    src_logId: target.log_id,
-    src_userId: target.author_id,
-    src_message: target.message,
+    mentions,
     src_type: target.type,
-    src_mentions: [],
-    mentions: [],
+    src_logId: target.log_id,
+    src_linkId: 0,
+    src_userId: target.author_id,
+    src_message: Array.from(target.message).slice(0, 100).join(''),
   }
 }
 
@@ -1399,16 +1430,26 @@ export class KakaoTalkClient {
     })
   }
 
-  async sendMessage(chatId: string, text: string, options?: { replyTo?: KakaoReplyTarget }): Promise<KakaoSendResult> {
+  async sendMessage(chatId: string, text: string, options?: KakaoSendMessageOptions): Promise<KakaoSendResult> {
+    let mentions: KakaoMention[] = []
+    if (options?.mentions?.length) {
+      try {
+        mentions = buildMentions(text, options.mentions, await this.getMembers(chatId))
+      } catch (error) {
+        throw wrapError(error, 'send_message_failed')
+      }
+    }
     return this.executeWithReconnect(async ({ session }) => {
       try {
         const response = options?.replyTo
           ? await session.sendReply(
               parseLong(chatId),
               text,
-              buildReplyExtra(options.replyTo) as unknown as Record<string, unknown>,
+              buildReplyExtra(options.replyTo, mentions) as unknown as Record<string, unknown>,
             )
-          : await session.sendMessage(parseLong(chatId), text)
+          : mentions.length
+            ? await session.sendMessage(parseLong(chatId), text, mentions)
+            : await session.sendMessage(parseLong(chatId), text)
 
         return {
           success: response.statusCode === 0,

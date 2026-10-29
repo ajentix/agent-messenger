@@ -1,9 +1,10 @@
-import { afterEach, beforeEach, describe, expect, mock, it } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, mock, it, spyOn } from 'bun:test'
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { KakaoTalkClient, KakaoTalkError } from './client'
+import type { KakaoMember } from './types'
 
 // Mock LocoSession at module level
 const mockLogin = mock(() => Promise.resolve({}))
@@ -2271,14 +2272,12 @@ describe('KakaoTalkClient', () => {
       const [, text, extra] = mockSendReply.mock.calls[0] as [unknown, string, Record<string, unknown>]
       expect(text).toBe('replying')
       expect(extra).toEqual({
-        attach_only: false,
-        attach_type: 1,
         src_logId: '42',
         src_userId: 7,
         src_message: 'original',
         src_type: 1,
-        src_mentions: [],
         mentions: [],
+        src_linkId: 0,
       })
       expect(result).toEqual({
         success: true,
@@ -2291,7 +2290,7 @@ describe('KakaoTalkClient', () => {
       client.close()
     })
 
-    it('mirrors the source message type into attach_type/src_type', async () => {
+    it('preserves the source message type in src_type', async () => {
       // given
       mockSendReply.mockResolvedValueOnce({ statusCode: 0, body: { logId: makeLong(51), sendAt: 1700000101 } })
       const client = await new KakaoTalkClient().login({ oauthToken: 'token', userId: 'user1', deviceUuid: 'device1' })
@@ -2303,9 +2302,117 @@ describe('KakaoTalkClient', () => {
 
       // then
       const [, , extra] = mockSendReply.mock.calls[0] as [unknown, string, Record<string, unknown>]
-      expect(extra.attach_type).toBe(2)
+      expect(extra).not.toHaveProperty('attach_type')
       expect(extra.src_type).toBe(2)
 
+      client.close()
+    })
+
+    const mentionMembers = [
+      { user_id: '437696862', nickname: '리트머스 유영준', user_type: 1000 },
+      { user_id: '8', nickname: '김민수' },
+    ] as KakaoMember[]
+
+    it.each([
+      ['@리트머스 유영준 확인해주세요', ['437696862'], [{ at: [1], len: 8, user_id: 437696862 }]],
+      [
+        '@리트머스 유영준 네 @리트머스 유영준',
+        ['437696862', '437696862'],
+        [{ at: [1, 2], len: 8, user_id: 437696862 }],
+      ],
+      [
+        '@리트머스 유영준 @김민수 @리트머스 유영준',
+        ['8', '437696862'],
+        [
+          { at: [2], len: 3, user_id: 8 },
+          { at: [1, 3], len: 8, user_id: 437696862 },
+        ],
+      ],
+    ])('builds mentions using room nicknames for %s', async (text, mentions, expected) => {
+      mockSendMessage.mockResolvedValueOnce({ statusCode: 0, body: { logId: makeLong(50), sendAt: 1 } })
+      const client = await new KakaoTalkClient().login({ oauthToken: 'token', userId: 'user1', deviceUuid: 'device1' })
+      const getMembers = spyOn(client, 'getMembers').mockResolvedValue(mentionMembers)
+
+      await client.sendMessage('100', text, { mentions })
+
+      expect(getMembers).toHaveBeenCalledWith('100')
+      expect(mockSendMessage).toHaveBeenCalledWith(expect.anything(), text, expected)
+      expect(mockSendReply).not.toHaveBeenCalled()
+      client.close()
+    })
+
+    it.each([
+      ['@외부인', ['999'], 'not a member'],
+      ['리트머스 유영준 확인해주세요', ['437696862'], 'must contain @리트머스 유영준'],
+    ])('rejects invalid mentions before any WRITE: %s', async (text, mentions, error) => {
+      const client = await new KakaoTalkClient().login({ oauthToken: 'token', userId: 'user1', deviceUuid: 'device1' })
+      spyOn(client, 'getMembers').mockResolvedValue(mentionMembers)
+
+      await expect(client.sendMessage('100', text, { mentions })).rejects.toThrow(error)
+
+      expect(mockSendMessage).not.toHaveBeenCalled()
+      expect(mockSendReply).not.toHaveBeenCalled()
+      client.close()
+    })
+
+    it('combines reply and mention extras, preserves the log ID and truncates the source to 100 characters', async () => {
+      mockSendReply.mockResolvedValueOnce({ statusCode: 0, body: { logId: makeLong(50), sendAt: 1 } })
+      const client = await new KakaoTalkClient().login({ oauthToken: 'token', userId: 'user1', deviceUuid: 'device1' })
+      spyOn(client, 'getMembers').mockResolvedValue(mentionMembers)
+
+      await client.sendMessage('100', '@리트머스 유영준 확인하였습니다.', {
+        mentions: ['437696862'],
+        replyTo: { log_id: '3961980999585314818', author_id: 437696862, message: '가'.repeat(99) + '😀나', type: 1 },
+      })
+
+      expect(mockSendReply).toHaveBeenCalledWith(expect.anything(), '@리트머스 유영준 확인하였습니다.', {
+        mentions: [{ at: [1], len: 8, user_id: 437696862 }],
+        src_type: 1,
+        src_logId: '3961980999585314818',
+        src_linkId: 0,
+        src_userId: 437696862,
+        src_message: '가'.repeat(99) + '😀',
+      })
+      expect(mockSendMessage).not.toHaveBeenCalled()
+      client.close()
+    })
+
+    it('keeps the original send call and skips member lookup without mentions, including an empty array', async () => {
+      mockSendMessage.mockResolvedValue({ statusCode: 0, body: { logId: makeLong(50), sendAt: 1 } })
+      const client = await new KakaoTalkClient().login({ oauthToken: 'token', userId: 'user1', deviceUuid: 'device1' })
+      const getMembers = spyOn(client, 'getMembers')
+      await client.sendMessage('100', 'hello')
+      await client.sendMessage('100', 'hello', { mentions: [] })
+      expect(getMembers).not.toHaveBeenCalled()
+      for (const call of mockSendMessage.mock.calls as unknown[][]) {
+        expect(call).toEqual([expect.anything(), 'hello'])
+      }
+      client.close()
+    })
+
+    it('fails closed when room membership cannot be read, including replies', async () => {
+      const client = await new KakaoTalkClient().login({ oauthToken: 'token', userId: 'user1', deviceUuid: 'device1' })
+      spyOn(client, 'getMembers').mockRejectedValue(new Error('member snapshot unavailable'))
+      await expect(
+        client.sendMessage('100', '@리트머스 유영준 네', {
+          mentions: ['437696862'],
+          replyTo: { log_id: '42', author_id: 7, message: '원문', type: 1 },
+        }),
+      ).rejects.toThrow('member snapshot unavailable')
+      expect(mockSendMessage).not.toHaveBeenCalled()
+      expect(mockSendReply).not.toHaveBeenCalled()
+      client.close()
+    })
+
+    it('rejects two requested users with identical room nicknames before writing', async () => {
+      const client = await new KakaoTalkClient().login({ oauthToken: 'token', userId: 'user1', deviceUuid: 'device1' })
+      spyOn(client, 'getMembers').mockResolvedValue([
+        { ...mentionMembers[0]!, nickname: '가' },
+        { ...mentionMembers[1]!, nickname: '가' },
+      ])
+      await expect(client.sendMessage('100', '@가', { mentions: ['437696862', '8'] })).rejects.toThrow('ambiguous')
+      expect(mockSendMessage).not.toHaveBeenCalled()
+      expect(mockSendReply).not.toHaveBeenCalled()
       client.close()
     })
   })

@@ -1,18 +1,66 @@
 import { describe, expect, it, mock } from 'bun:test'
 
 import { Long } from 'bson'
+import { serialize } from 'bson'
 
 import {
   buildModifyMessageBody,
   buildTypingActionBody,
   MODIFY_MESSAGE_METHOD,
   sendModifyMessagePacket,
+  sendMessagePacket,
   sendTypingPacket,
   TYPING_ACTION_METHOD,
 } from './session'
 import type { LocoPacket } from './types'
 
 type SentPacket = { method: string; body: Record<string, unknown> }
+
+describe('message WRITE wire contract', () => {
+  it('keeps plain text WRITE byte-for-byte identical without extra', async () => {
+    const { connection, sent } = fakeConnection()
+    const chatId = Long.fromString('459750513901477')
+    await sendMessagePacket(connection, chatId, 'hello')
+    expect(sent[0]!.method).toBe('WRITE')
+    const original = { chatId, msg: 'hello', type: 1, noSeen: false }
+    expect(serialize(sent[0]!.body)).toEqual(serialize(original))
+  })
+
+  it('serializes mentions as numeric user IDs in a type 1 WRITE extra', async () => {
+    const { connection, sent } = fakeConnection()
+    const mentions = [{ at: [1, 2], len: 8, user_id: 437696862 }]
+    await sendMessagePacket(connection, Long.fromString('100'), '@리트머스 유영준 @리트머스 유영준', 1, { mentions })
+    expect(sent).toEqual([
+      {
+        method: 'WRITE',
+        body: {
+          chatId: Long.fromString('100'),
+          msg: '@리트머스 유영준 @리트머스 유영준',
+          type: 1,
+          noSeen: false,
+          extra: '{"mentions":[{"at":[1,2],"len":8,"user_id":437696862}]}',
+        },
+      },
+    ])
+  })
+
+  it('serializes reply mentions in type 26 while preserving a full-width source log ID', async () => {
+    const { connection, sent } = fakeConnection()
+    const extra = {
+      mentions: [{ at: [1], len: 8, user_id: 437696862 }],
+      src_type: 1,
+      src_logId: '3961980999585314818',
+      src_linkId: 0,
+      src_userId: 437696862,
+      src_message: '원문',
+    }
+    await sendMessagePacket(connection, Long.fromString('100'), '@리트머스 유영준 확인했습니다', 26, extra)
+    expect(sent[0]!.method).toBe('WRITE')
+    expect(sent[0]!.body.type).toBe(26)
+    expect(sent[0]!.body.extra).toBe(JSON.stringify(extra))
+    expect(JSON.parse(sent[0]!.body.extra as string).src_logId).toBe('3961980999585314818')
+  })
+})
 
 // Fake connection object that captures every sendPacket call. We test
 // sendTypingPacket (the extracted wire-boundary function) directly rather than

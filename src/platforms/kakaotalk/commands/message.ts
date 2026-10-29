@@ -28,18 +28,22 @@ async function listAction(
 async function sendAction(
   chatId: string,
   text: string,
-  options: { account?: string; pretty?: boolean; replyTo?: string; allowDenseLayout?: boolean },
+  options: { account?: string; pretty?: boolean; replyTo?: string; mention?: string[]; allowDenseLayout?: boolean },
 ): Promise<void> {
   try {
     // Refuse a dense multi-line message before any network call (see message-layout.ts).
     assertReadableMessageLayout(text, { allowDense: options.allowDenseLayout })
     const result = await withKakaoClient(options, async (client) => {
-      if (options.replyTo === undefined) {
+      if (options.replyTo === undefined && !options.mention?.length) {
         return client.sendMessage(chatId, text)
       }
 
-      const target = await resolveReplyTarget(client, chatId, options.replyTo)
-      return client.sendMessage(chatId, text, { replyTo: target })
+      const replyTo =
+        options.replyTo === undefined ? undefined : await resolveReplyTarget(client, chatId, options.replyTo)
+      return client.sendMessage(chatId, text, {
+        ...(replyTo ? { replyTo } : {}),
+        ...(options.mention?.length ? { mentions: options.mention } : {}),
+      })
     })
     console.log(formatOutput(result, options.pretty))
   } catch (error) {
@@ -190,6 +194,11 @@ export const messageCommand = new Command('message')
       .argument('<text>', 'Message text')
       .option('--account <id>', 'Use a specific KakaoTalk account')
       .option('--reply-to <log-id>', 'Send as a quoted reply to this message log ID')
+      .option(
+        '--mention <user-id>',
+        'Mention a room member whose @nickname appears in the text (repeatable)',
+        (value: string, previous: string[] = []) => [...previous, value],
+      )
       .option('--allow-dense-layout', 'Send even if the opening line or list items lack a blank line before them')
       .option('--pretty', 'Pretty print JSON output')
       .action(sendAction),

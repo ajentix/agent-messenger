@@ -59,6 +59,9 @@ describe('message commands', () => {
   let consoleLogSpy: ReturnType<typeof mock>
 
   beforeEach(() => {
+    const send = messageCommand.commands.find((command) => command.name() === 'send')!
+    send.setOptionValue('replyTo', undefined)
+    send.setOptionValue('mention', undefined)
     mockWithKakaoClient.mockReset()
     mockGetMessages.mockReset()
     mockSendMessage.mockReset()
@@ -132,6 +135,26 @@ describe('message commands', () => {
   })
 
   describe('send', () => {
+    it('collects repeatable --mention options', async () => {
+      await messageCommand.parseAsync(['send', 'chat-123', '@가 @나', '--mention', '7', '--mention', '8'], {
+        from: 'user',
+      })
+      expect(mockSendMessage).toHaveBeenCalledWith('chat-123', '@가 @나', { mentions: ['7', '8'] })
+    })
+
+    it('passes mentions alongside a resolved reply target', async () => {
+      mockGetMessages.mockImplementation(() =>
+        Promise.resolve([{ log_id: '42', type: 1, author_id: 7, message: 'target' }]),
+      )
+      await messageCommand.parseAsync(['send', 'chat-123', '@가 네', '--reply-to', '42', '--mention', '7'], {
+        from: 'user',
+      })
+      expect(mockSendMessage).toHaveBeenCalledWith('chat-123', '@가 네', {
+        replyTo: { log_id: '42', type: 1, author_id: 7, message: 'target' },
+        mentions: ['7'],
+      })
+    })
+
     it('sends a message to a chat room', async () => {
       await messageCommand.parseAsync(['send', 'chat-123', 'Hello world'], { from: 'user' })
 

@@ -144,6 +144,38 @@ const result = await client.sendMessage('9876543210', 'Hello from SDK!')
 // → KakaoSendResult { success, status_code, chat_id, log_id, sent_at }
 ```
 
+#### Mentions and replies
+
+`sendMessage(chatId, text, options?: KakaoSendMessageOptions)` accepts `{ replyTo?: KakaoReplyTarget, mentions?: string[] }`. `mentions` contains room member IDs, not display names or prebuilt metadata. The client calls `getMembers(chatId)` and uses each room member's `nickname`, including open-chat profile names. Missing members or missing `@nickname` text fail before a WRITE; duplicate IDs are merged. Targets with identical nicknames are rejected as ambiguous.
+
+```typescript
+await client.sendMessage('9876543210', '@리트머스 유영준 확인 부탁드립니다.', {
+  mentions: ['437696862'],
+})
+
+await client.sendMessage('9876543210', '@리트머스 유영준 확인하였습니다.', {
+  mentions: ['437696862'],
+  replyTo: { log_id: '3961980999585314818', author_id: 437696862, message: '원문', type: 1 },
+})
+```
+
+`KakaoMention` is `{ at: number[], len: number, user_id: number }`. `at` contains 1-based `@` occurrence numbers in the entire text; `len` is the nickname's character count including spaces. For `@가 @나 @가`, 가 has `[1,3]` and 나 has `[2]`.
+
+A text mention uses WRITE type 1 with `extra: JSON.stringify({ mentions })`. A reply uses type 26 with this `KakaoReplyExtra` shape:
+
+```json
+{
+  "mentions": [{ "at": [1], "len": 8, "user_id": 437696862 }],
+  "src_type": 1,
+  "src_logId": "3961980999585314818",
+  "src_linkId": 0,
+  "src_userId": 437696862,
+  "src_message": "원문"
+}
+```
+
+The source preview is limited to 100 characters. Source log IDs remain strings to preserve 64-bit precision with the existing JSON serializer. Plain text without mentions (including `mentions: []`) retains the original WRITE without `extra` and skips member lookup. Replies without mentions carry `mentions: []` and the same source fields.
+
 #### Attachments
 
 `sendAttachment` is the single entry point for outbound photos, videos, audio, files, and multi-photo galleries. It accepts either one buffer or an array of `{ data, filename, mime? }` tuples; MIME is sniffed from the filename when not given, and the client dispatches to the right LOCO message_type internally.
