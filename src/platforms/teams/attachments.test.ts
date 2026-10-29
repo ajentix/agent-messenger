@@ -277,7 +277,7 @@ describe('TeamsClient attachment uploads', () => {
       'Content-Length': String(total - 3276800),
     })
     const body = JSON.parse(String(calls[7].options?.body))
-    expect(body.body.content).toContain('<attachment id="11111111-1111-1111-1111-111111111111"></attachment>')
+    expect(body.body.content).toBe('<p>See</p><attachment id="11111111-1111-1111-1111-111111111111"></attachment>')
     expect(body.attachments).toEqual([
       {
         id: '11111111-1111-1111-1111-111111111111',
@@ -310,8 +310,48 @@ describe('TeamsClient attachment uploads', () => {
     expect(calls[0].url).toContain('/teams/team/channels/channel/filesFolder')
     expect(calls[1].url).toContain('conflictBehavior=rename')
     expect(body.attachments[0].contentType).toBe('reference')
+    expect(body.body.content).toBe('<attachment id="22222222-2222-2222-2222-222222222222"></attachment>')
     expect(calls.some((call) => call.url.endsWith('/invite'))).toBe(false)
   })
+
+  for (const route of ['chat', 'channel post', 'channel reply']) {
+    it.each([
+      [
+        'multiline text',
+        '안녕 {{mention:0}}\r\n\r\n<&>\r\n',
+        '<p>안녕 {{mention:0}}</p><p>&nbsp;</p><p>&lt;&amp;&gt;</p>',
+      ],
+      ['attachment only', '', ''],
+    ])(`${route} attachment: %s`, async (_name, content, expected) => {
+      const file = join(tempDir, 'report.pdf')
+      await writeFile(file, 'pdf')
+      const id = '22222222-2222-2222-2222-222222222222'
+      responses.push(
+        json(route === 'chat' ? { id: 'drive' } : { id: 'folder', parentReference: { driveId: 'drive' } }),
+        json({ id: 'item' }),
+        json({ id: 'item', name: 'report.pdf', eTag: `{${id}},1`, webUrl: 'https://web/report' }),
+        json({ id: 'message', body: { contentType: 'html', content: '' } }),
+      )
+      const value = await client()
+      if (route === 'chat') await value.sendChatMessage('48:notes', content, 'text', { files: [file] })
+      else
+        await value.sendMessage('team', 'channel', content, route === 'channel reply' ? 'root' : undefined, 'text', {
+          files: [file],
+        })
+
+      const post = calls.at(-1)!
+      const endpoint =
+        route === 'chat'
+          ? '/chats/48%3Anotes/messages'
+          : `/teams/team/channels/channel/messages${route === 'channel reply' ? '/root/replies' : ''}`
+      expect(post.url).toBe(`https://graph.microsoft.com/v1.0${endpoint}`)
+      const payload = JSON.parse(String(post.options?.body))
+      expect(payload.body).toEqual({ contentType: 'html', content: `${expected}<attachment id="${id}"></attachment>` })
+      expect(payload.attachments).toEqual([
+        { id, contentType: 'reference', contentUrl: 'https://web/report', name: 'report.pdf' },
+      ])
+    })
+  }
 
   it('rejects invalid attachments before making Graph requests', async () => {
     const value = await client()

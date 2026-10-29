@@ -335,7 +335,7 @@ describe('TeamsClient', () => {
       expect(fetchCalls[0].options?.method).toBe('POST')
       expect(fetchCalls[0].options?.body).toBe(
         JSON.stringify({
-          content: 'a &lt;b&gt; &amp; c',
+          content: '<p>a &lt;b&gt; &amp; c</p>',
           messagetype: 'RichText/Html',
           contenttype: 'text',
         }),
@@ -390,7 +390,7 @@ describe('TeamsClient', () => {
       expect(fetchCalls[0].options?.method).toBe('PUT')
       expect(fetchCalls[0].options?.body).toBe(
         JSON.stringify({
-          content: 'a &lt;b&gt; &amp; c',
+          content: '<p>a &lt;b&gt; &amp; c</p>',
           messagetype: 'RichText/Html',
           contenttype: 'text',
           skypeeditedid: 'msg1',
@@ -465,7 +465,7 @@ describe('TeamsClient', () => {
       expect(fetchCalls[0].url).toBe('https://graph.microsoft.com/v1.0/teams/111/channels/ch1/messages')
       expect(fetchCalls[1].url).toBe('https://graph.microsoft.com/v1.0/teams/111/channels/ch1/messages/root1/replies')
       expect(JSON.parse(String(fetchCalls[1].options?.body))).toEqual({
-        body: { contentType: 'html', content: 'Reply' },
+        body: { contentType: 'html', content: '<p>Reply</p>' },
       })
     })
     it('escapes text, retains line breaks, renders markdown and sanitizes HTML', async () => {
@@ -475,7 +475,7 @@ describe('TeamsClient', () => {
       await client.sendMessage('111', 'ch1', '**bold**', undefined, 'markdown')
       await client.sendMessage('111', 'ch1', '<script>alert(1)</script><strong>ok</strong>', undefined, 'html')
       const bodies = fetchCalls.map((c) => JSON.parse(String(c.options?.body)).body.content)
-      expect(bodies[0]).toBe('a &lt;b&gt; &amp; c<br>next')
+      expect(bodies[0]).toBe('<p>a &lt;b&gt; &amp; c</p><p>next</p>')
       expect(bodies[1]).toBe('<strong>bold</strong>')
       expect(bodies[2]).toBe('&lt;script&gt;alert(1)&lt;/script&gt;<strong>ok</strong>')
     })
@@ -484,6 +484,52 @@ describe('TeamsClient', () => {
       const client = await graphClient()
       await client.sendMessage('111', 'ch1', 'Hey <at id="29:xyz">John</at>', undefined, 'html')
       expect(JSON.parse(String(fetchCalls[0].options?.body)).body.content).toBe('Hey <at id="29:xyz">John</at>')
+    })
+  })
+
+  describe('text paragraphs across message routes', () => {
+    const cases = [
+      ['single line', '감사합니다', '<p>감사합니다</p>'],
+      ['LF lines', '줄1\n줄2\n줄3', '<p>줄1</p><p>줄2</p><p>줄3</p>'],
+      ['CRLF lines', '줄1\r\n줄2', '<p>줄1</p><p>줄2</p>'],
+      ['CR lines', '줄1\r줄2', '<p>줄1</p><p>줄2</p>'],
+      ['internal empty lines', '줄1\n\n\n줄2', '<p>줄1</p><p>&nbsp;</p><p>&nbsp;</p><p>줄2</p>'],
+      ['leading empty line', '\n줄1', '<p>&nbsp;</p><p>줄1</p>'],
+      ['trailing newlines', '줄1\r\n\r\n', '<p>줄1</p>'],
+      ['whitespace', '  줄1  \n\t줄2 ', '<p>  줄1  </p><p>\t줄2 </p>'],
+      ['HTML escaping', '<p>"&\'</p>\n&nbsp;', '<p>&lt;p&gt;&quot;&amp;&#39;&lt;/p&gt;</p><p>&amp;nbsp;</p>'],
+      // This revision has no marker resolver. Text formatting must preserve markers for callers.
+      [
+        'mention markers',
+        '안녕 {{mention:0}}\n{{mention:1}} 확인',
+        '<p>안녕 {{mention:0}}</p><p>{{mention:1}} 확인</p>',
+      ],
+    ]
+
+    for (const route of ['chat send', 'chat edit', 'channel post', 'channel reply']) {
+      it.each(cases)(`${route}: %s`, async (_name, content, expected) => {
+        const isChat = route.startsWith('chat')
+        mockResponse(isChat ? { OriginalArrivalTime: 1704067200000 } : graphMessage())
+        const client = await graphClient()
+        if (route === 'chat send') await client.sendChatMessage('chat', content, 'text')
+        else if (route === 'chat edit') await client.editChatMessage('chat', 'msg1', content, 'text')
+        else
+          await client.sendMessage('team', 'channel', content, route === 'channel reply' ? 'root' : undefined, 'text')
+
+        expect(fetchCalls).toHaveLength(1)
+        const payload = JSON.parse(String(fetchCalls[0].options?.body))
+        expect(isChat ? payload.content : payload.body.content).toBe(expected)
+      })
+    }
+
+    it('keeps multiline markdown and explicit HTML mention formatting unchanged', async () => {
+      mockResponse(graphMessage())
+      mockResponse(graphMessage())
+      const client = await graphClient()
+      await client.sendMessage('team', 'channel', '줄1\n줄2', undefined, 'markdown')
+      await client.sendMessage('team', 'channel', '<p>안녕 <at id="0">이름</at></p><p>확인</p>', undefined, 'html')
+      const bodies = fetchCalls.map((call) => JSON.parse(String(call.options?.body)).body.content)
+      expect(bodies).toEqual(['줄1<br/>줄2', '<p>안녕 <at id="0">이름</at></p><p>확인</p>'])
     })
   })
 

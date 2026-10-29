@@ -179,7 +179,7 @@ describe('Teams Graph transport regressions', () => {
     expect(calls[0].url).toBe(
       'https://graph.microsoft.com/v1.0/teams/team-1/channels/channel-1/messages/root-1/replies',
     )
-    expect(JSON.parse(String(calls[0].options?.body))).toEqual({ body: { contentType: 'html', content: 'Example' } })
+    expect(JSON.parse(String(calls[0].options?.body))).toEqual({ body: { contentType: 'html', content: '<p>Example</p>' } })
   })
 
   it('does not replay Skype chat sends after a 5xx response', async () => {

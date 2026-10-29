@@ -299,7 +299,15 @@ async function readDownloadResponse(response: Response, codePrefix: string): Pro
 
 function formatContent(content: string, format: TeamsMessageFormat): string {
   if (format === 'html') return sanitizeTeamsHtml(content)
-  return format === 'markdown' ? markdownToHtml(content) : escapeHtml(content).replace(/\r?\n/g, '<br>')
+  if (format === 'markdown') return markdownToHtml(content)
+
+  const text = content.replace(/\r\n?/g, '\n').replace(/\n+$/, '')
+  if (!text) return ''
+  // Match Teams app paragraphs; &nbsp; keeps internal empty lines visible.
+  return text
+    .split('\n')
+    .map((line) => `<p>${line ? escapeHtml(line) : '&nbsp;'}</p>`)
+    .join('')
 }
 
 // groupId => Teams/channel thread (handled by listTeams). "48:notes"/

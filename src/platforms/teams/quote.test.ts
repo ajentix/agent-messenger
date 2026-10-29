@@ -83,15 +83,18 @@ describe('TeamsClient quoted chat messages', () => {
       page(['1793067404262']),
       json({ id: '1793200000000', chatId: '19:chat@thread.v2', body: { contentType: 'html', content: '' } }, 201),
     )
-    const message = await (await client()).sendChatMessage('19:chat@thread.v2', '확인했습니다', 'text', {
+    const message = await (
+      await client()
+    ).sendChatMessage('19:chat@thread.v2', '확인했습니다\n\n감사합니다\n', 'text', {
       quote: '1793067404262',
     })
     expect(message.quoted_message_id).toBe('1793067404262')
     const post = calls.at(-1)!
     expect(post.url).toBe('https://graph.microsoft.com/v1.0/chats/19%3Achat%40thread.v2/messages')
     const body = JSON.parse(String(post.options?.body))
-    expect(body.body.content.startsWith('<attachment id="1793067404262"></attachment>')).toBe(true)
-    expect(body.body.content).toContain('확인했습니다')
+    expect(body.body.content).toBe(
+      '<attachment id="1793067404262"></attachment><p>확인했습니다</p><p>&nbsp;</p><p>감사합니다</p>',
+    )
     expect(body.attachments).toHaveLength(1)
     expect(body.attachments[0].contentType).toBe('messageReference')
     expect(calls.some((call) => call.url.includes('/drive'))).toBe(false)
