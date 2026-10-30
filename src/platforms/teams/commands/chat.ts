@@ -124,7 +124,7 @@ export async function editAction(
   chatId: string,
   messageId: string,
   content: string,
-  options: { pretty?: boolean; format?: string },
+  options: { pretty?: boolean; format?: string; dropImages?: boolean },
 ): Promise<void> {
   const format = resolveFormat(options.format, options.pretty)
 
@@ -143,7 +143,10 @@ export async function editAction(
       accountType: cred.accountType,
       region: cred.region,
     })
-    const message = await client.editChatMessage(chatId, messageId, content, format)
+    // Like the Teams app, an edit keeps the images already in the message unless asked not to.
+    const message = await client.editChatMessage(chatId, messageId, content, format, {
+      keepImages: !options.dropImages,
+    })
 
     const output = {
       ...message,
@@ -206,6 +209,7 @@ export const chatCommand = new Command('chat')
       .argument('<message-id>', 'Message ID')
       .argument('<content>', 'New message content')
       .option('--format <format>', 'Message format: text, markdown, or html', 'text')
+      .option('--drop-images', 'Remove the images already in the message instead of keeping them')
       .option('--pretty', 'Pretty print JSON output')
       .action(editAction),
   )

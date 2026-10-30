@@ -116,10 +116,23 @@ it('edit: edits a chat message and returns updated content', async () => {
 
   await editAction('19:1on1@unq.gbl.spaces', 'msg_123', 'Edited content', { pretty: false })
 
-  expect(clientEditChatMessageSpy).toHaveBeenCalledWith('19:1on1@unq.gbl.spaces', 'msg_123', 'Edited content', 'text')
+  expect(clientEditChatMessageSpy).toHaveBeenCalledWith('19:1on1@unq.gbl.spaces', 'msg_123', 'Edited content', 'text', {
+    keepImages: true,
+  })
   expect(consoleSpy).toHaveBeenCalled()
   const output = consoleSpy.mock.calls[0][0]
   expect(output).toContain('Edited content')
+})
+
+it('edit: drops the existing images only when --drop-images is given', async () => {
+  const consoleSpy = mock((_msg: string) => {})
+  console.log = consoleSpy
+
+  await editAction('19:1on1@unq.gbl.spaces', 'msg_123', 'Text only', { pretty: false, dropImages: true })
+
+  expect(clientEditChatMessageSpy).toHaveBeenCalledWith('19:1on1@unq.gbl.spaces', 'msg_123', 'Text only', 'text', {
+    keepImages: false,
+  })
 })
 
 it('send: passes markdown format to the client', async () => {
@@ -178,7 +191,9 @@ it('edit: passes markdown format to the client', async () => {
 
   await editAction('19:1on1@unq.gbl.spaces', 'msg_123', '**bold**', { pretty: false, format: 'markdown' })
 
-  expect(clientEditChatMessageSpy).toHaveBeenCalledWith('19:1on1@unq.gbl.spaces', 'msg_123', '**bold**', 'markdown')
+  expect(clientEditChatMessageSpy).toHaveBeenCalledWith('19:1on1@unq.gbl.spaces', 'msg_123', '**bold**', 'markdown', {
+    keepImages: true,
+  })
 })
 
 it('edit: rejects an invalid format', async () => {

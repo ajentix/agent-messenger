@@ -430,6 +430,55 @@ describe('TeamsClient', () => {
         }),
       )
     })
+
+    const storedImage =
+      '<img src="https://kr-prod.asyncgw.teams.microsoft.com/v1/objects/0-ckr-d1-abc/views/imgpsh_fullsize" width="800" height="521" alt="image" id="x_0-ckr-d1-abc" itemscope="" itemtype="http://schema.skype.com/AMSImage">'
+
+    it('keeps the stored Teams images when keepImages is set', async () => {
+      const foreignImage =
+        '<img src="https://example.com/x.png" itemscope="" itemtype="http://schema.skype.com/AMSImage">'
+      mockResponse({
+        messages: [
+          { id: 'msg0', messagetype: 'RichText/Html', content: '<p>other</p>' },
+          { id: 'msg1', messagetype: 'RichText/Html', content: `<p>old</p>${storedImage}${foreignImage}` },
+        ],
+      })
+      mockResponse({ edittime: 1704067200000 })
+
+      const client = await new TeamsClient().login({ token: 'test-token', accountType: 'personal' })
+      const message = await client.editChatMessage('19:1on1@unq.gbl.spaces', 'msg1', '<p>new</p>', 'html', {
+        keepImages: true,
+      })
+
+      expect(message.images_kept).toBe(1)
+      expect(fetchCalls).toHaveLength(2)
+      expect(fetchCalls[0].url).toContain('/users/ME/conversations/19%3A1on1%40unq.gbl.spaces/messages?')
+      expect(fetchCalls[1].options?.method).toBe('PUT')
+      expect(JSON.parse(String(fetchCalls[1].options?.body)).content).toBe(`<p>new</p>${storedImage}`)
+    })
+
+    it('refuses to edit when keepImages cannot find the message', async () => {
+      mockResponse({ messages: [{ id: 'msg0', messagetype: 'RichText/Html', content: '<p>other</p>' }] })
+
+      const client = await new TeamsClient().login({ token: 'test-token', accountType: 'personal' })
+      await expect(
+        client.editChatMessage('19:1on1@unq.gbl.spaces', 'msg1', 'new', 'text', { keepImages: true }),
+      ).rejects.toThrow('was not found')
+      expect(fetchCalls).toHaveLength(1)
+    })
+
+    it('does not read the message when images are not kept', async () => {
+      mockResponse({ edittime: 1704067200000 })
+
+      const client = await new TeamsClient().login({ token: 'test-token', accountType: 'personal' })
+      const message = await client.editChatMessage('19:1on1@unq.gbl.spaces', 'msg1', 'new', 'text', {
+        keepImages: false,
+      })
+
+      expect(message.images_kept).toBeUndefined()
+      expect(fetchCalls).toHaveLength(1)
+      expect(JSON.parse(String(fetchCalls[0].options?.body)).content).toBe('<p>new</p>')
+    })
   })
 
   describe('Graph teams and channels', () => {

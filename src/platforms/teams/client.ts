@@ -310,6 +310,16 @@ function formatContent(content: string, format: TeamsMessageFormat): string {
     .join('')
 }
 
+// Teams stores chat images as AMSImage tags pointing at the async media gateway. The HTML
+// sanitizer escapes <img>, so an edit keeps images the way the Teams app does: by copying the
+// tags the server already holds for that message. Only gateway sources are copied.
+const STORED_IMAGE_TAG = /<img\b[^>]*\bitemtype="http:\/\/schema\.skype\.com\/AMSImage"[^>]*>/gi
+const STORED_IMAGE_SRC = /\bsrc="https:\/\/[a-z0-9-]+\.asyncgw\.teams\.microsoft\.com\/v1\/objects\/[^"\s]+"/i
+
+export function storedChatImages(html: string): string[] {
+  return (html.match(STORED_IMAGE_TAG) ?? []).filter((tag) => STORED_IMAGE_SRC.test(tag))
+}
+
 // groupId => Teams/channel thread (handled by listTeams). "48:notes"/
 // streamofnotes => the user's self ("to me") chat. Anything else without a
 // non-chat threadType is a normal 1:1 (no topic) or group (has topic) chat.
@@ -792,7 +802,10 @@ export class TeamsClient {
       const result = await this.getChatMessagesPage(chatId, 100, cursor)
       const found = result.messages.find((message) => message.id === messageId)
       if (found) {
-        if (found.deleted_at || (found.raw as { properties?: { deletetime?: unknown } } | undefined)?.properties?.deletetime)
+        if (
+          found.deleted_at ||
+          (found.raw as { properties?: { deletetime?: unknown } } | undefined)?.properties?.deletetime
+        )
           throw new TeamsError('Quoted message was deleted.', 'quote_deleted')
         return found
       }
@@ -807,9 +820,21 @@ export class TeamsClient {
     messageId: string,
     content: string,
     format: TeamsMessageFormat = 'text',
-  ): Promise<TeamsMessage> {
+    options: { keepImages?: boolean } = {},
+  ): Promise<TeamsMessage & { images_kept?: number }> {
     interface EditResponse {
       edittime?: string | number
+    }
+    // An edit replaces the whole body, so images survive only if their stored tags are sent again.
+    let images: string[] = []
+    if (options.keepImages) {
+      const current = await this.locateChatMessage(chatId, messageId)
+      if (!current)
+        throw new TeamsError(
+          'Message to edit was not found in the last 5 pages, so its images cannot be kept. Use --drop-images to edit without them.',
+          'edit_target_not_found',
+        )
+      images = storedChatImages(current.raw_content ?? '')
     }
     const encodedChatId = encodeURIComponent(chatId)
     const encodedMessageId = encodeURIComponent(messageId)
@@ -818,7 +843,7 @@ export class TeamsClient {
       'PUT',
       `/users/ME/conversations/${encodedChatId}/messages/${encodedMessageId}`,
       {
-        content: formatContent(content, format),
+        content: formatContent(content, format) + images.join(''),
         messagetype: 'RichText/Html',
         contenttype: 'text',
         skypeeditedid: messageId,
@@ -832,7 +857,19 @@ export class TeamsClient {
       author: { id: 'ME', displayName: 'Me' },
       content,
       timestamp: editTime ? new Date(Number(editTime) || editTime).toISOString() : new Date().toISOString(),
+      ...(options.keepImages ? { images_kept: images.length } : {}),
     }
+  }
+
+  private async locateChatMessage(chatId: string, messageId: string, maxPages = 5): Promise<TeamsMessage | undefined> {
+    let cursor: string | undefined
+    for (let page = 0; page < maxPages; page++) {
+      const result = await this.getChatMessagesPage(chatId, 100, cursor)
+      const found = result.messages.find((message) => message.id === messageId)
+      if (found || !result.next_cursor) return found
+      cursor = result.next_cursor
+    }
+    return undefined
   }
 
   private graph(): TeamsGraph {
