@@ -134,6 +134,13 @@ count, display-member subset, and full member-ID set are stable. It does
 not call `CHATONROOM`, so it does not enter the room or advance unread
 state. Any malformed, partial, or changing snapshot fails closed.
 
+`GETMEM` returns at most 10 members per response. For a larger room the
+snapshot reads the following pages by `token` and accepts the room only
+when those pages, the two identical `CHATINFO` display-member lists and this
+account add up to exactly the active count. This account fills the last
+slot only when the display members are everyone else. Such a snapshot
+reports `consistency_basis: 'chatinfo_display_plus_paged_getmem'`.
+
 Each `KakaoMember` includes `user_id`, `nickname`, profile image URLs, `status_message`, `country_iso`, `user_type` (nullable; `null` when the server omits the field), and open-chat-only fields (`open_token`, `open_profile_link_id`, `open_permission` — the last is the OpenChannelUserPerm bitfield: `1`=OWNER, `2`=NONE, `4`=MANAGER, `8`=BOT).
 
 ### Sending

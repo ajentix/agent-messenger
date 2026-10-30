@@ -2240,6 +2240,21 @@ describe('KakaoTalkClient', () => {
       client.close()
     })
 
+    it('reports failure when the server refuses the write in body.status', async () => {
+      mockSendMessage.mockResolvedValueOnce({
+        statusCode: 0,
+        body: { status: -805, logId: makeLong(0), sendAt: 0 },
+      })
+
+      const client = await new KakaoTalkClient().login({ oauthToken: 'token', userId: 'user1', deviceUuid: 'device1' })
+      const result = await client.sendMessage('100', 'hello')
+
+      expect(result.success).toBe(false)
+      expect(result.status_code).toBe(-805)
+
+      client.close()
+    })
+
     it('wraps transport errors as KakaoTalkError', async () => {
       mockSendMessage.mockRejectedValue(new Error('Socket closed'))
 
@@ -3235,6 +3250,85 @@ describe('KakaoTalkClient', () => {
       expect(mockGetChatInfo).not.toHaveBeenCalled()
 
       client.close()
+    })
+
+    describe('rooms with more than 10 members', () => {
+      const member = (id: number) => ({ userId: makeLong(id), nickName: `m${id}`, type: 100 })
+      const range = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => member(from + i))
+      // A 12-member room as observed in production: CHATINFO lists everyone but this
+      // account (user 1), and GETMEM returns 10 members per page.
+      const others = range(2, 12)
+
+      it('reads the next GETMEM page by token and fills this account from CHATINFO', async () => {
+        mockGetChannelInfo.mockResolvedValue(memberChannelInfo(12, others))
+        mockGetAllMembers
+          .mockResolvedValueOnce({ statusCode: 0, body: { members: range(2, 11), token: 7 } })
+          .mockResolvedValueOnce({ statusCode: 0, body: { members: range(12, 12) } })
+
+        const client = await new KakaoTalkClient().login({ oauthToken: 'token', userId: '1', deviceUuid: 'device1' })
+        const snapshot = await client.getMemberSnapshot('100')
+
+        expect(snapshot).toMatchObject({
+          chat_id: '100',
+          active_members: 12,
+          complete: true,
+          consistency_basis: 'chatinfo_display_plus_paged_getmem',
+        })
+        expect(snapshot.members.map((m) => m.user_id).sort((a, b) => Number(a) - Number(b))).toEqual(
+          Array.from({ length: 12 }, (_, i) => String(i + 1)),
+        )
+        expect(mockGetAllMembers).toHaveBeenCalledTimes(2)
+        expect(mockGetAllMembers.mock.calls[1]).toEqual([expect.anything(), 7])
+        expect(mockGetChatInfo).not.toHaveBeenCalled()
+
+        client.close()
+      })
+
+      it('accepts CHATINFO as the rest of the room when GETMEM pages do not advance', async () => {
+        mockGetChannelInfo.mockResolvedValue(memberChannelInfo(12, others))
+        mockGetAllMembers.mockResolvedValue({ statusCode: 0, body: { members: range(2, 11), token: 0 } })
+
+        const client = await new KakaoTalkClient().login({ oauthToken: 'token', userId: '1', deviceUuid: 'device1' })
+        const members = await client.getMembers('100')
+
+        expect(members).toHaveLength(12)
+        expect(members.find((m) => m.user_id === '12')?.nickname).toBe('m12')
+        expect(members.find((m) => m.user_id === '1')?.nickname).toBe('')
+
+        client.close()
+      })
+
+      it('fails closed when CHATINFO does not cover everyone else', async () => {
+        mockGetChannelInfo.mockResolvedValue(memberChannelInfo(12, range(2, 11)))
+        mockGetAllMembers.mockResolvedValue({ statusCode: 0, body: { members: range(2, 11) } })
+
+        const client = await new KakaoTalkClient().login({ oauthToken: 'token', userId: '1', deviceUuid: 'device1' })
+        await expect(client.getMembers('100')).rejects.toMatchObject({ code: 'get_members_failed' })
+
+        client.close()
+      })
+
+      it('fails closed when CHATINFO changes between the two reads', async () => {
+        mockGetChannelInfo
+          .mockResolvedValueOnce(memberChannelInfo(12, others))
+          .mockResolvedValueOnce(memberChannelInfo(12, [...range(2, 11), member(13)]))
+        mockGetAllMembers.mockResolvedValue({ statusCode: 0, body: { members: range(2, 11) } })
+
+        const client = await new KakaoTalkClient().login({ oauthToken: 'token', userId: '1', deviceUuid: 'device1' })
+        await expect(client.getMemberSnapshot('100')).rejects.toMatchObject({ code: 'get_member_snapshot_failed' })
+
+        client.close()
+      })
+
+      it('fails closed when this account is not in the room', async () => {
+        mockGetChannelInfo.mockResolvedValue(memberChannelInfo(12, range(2, 13)))
+        mockGetAllMembers.mockResolvedValue({ statusCode: 0, body: { members: range(2, 11) } })
+
+        const client = await new KakaoTalkClient().login({ oauthToken: 'token', userId: '1', deviceUuid: 'device1' })
+        await expect(client.getMemberSnapshot('100')).rejects.toMatchObject({ code: 'get_member_snapshot_failed' })
+
+        client.close()
+      })
     })
 
     it('fails closed when active membership changes across the snapshot', async () => {

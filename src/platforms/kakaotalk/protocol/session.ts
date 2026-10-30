@@ -335,10 +335,12 @@ export class LocoSession {
    * `{ members: NormalMemberStruct[] | OpenMemberStruct[], token: number }`.
    * Use this to resolve nicknames for users not present in the chat list's
    * "display members" cache — necessary for groups with more than ~5 members.
+   * A response holds at most 10 members; pass the previous response's `token`
+   * to request the next page.
    */
-  async getAllMembers(chatId: Long): Promise<LocoPacket> {
+  async getAllMembers(chatId: Long, token?: unknown): Promise<LocoPacket> {
     if (!this.connection) throw new Error('Not connected')
-    return this.connection.sendPacket('GETMEM', { chatId })
+    return this.connection.sendPacket('GETMEM', token === undefined ? { chatId } : { chatId, token })
   }
 
   /**

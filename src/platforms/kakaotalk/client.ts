@@ -556,6 +556,15 @@ function isNonZeroLong(v: unknown): boolean {
   return v !== undefined && v !== null
 }
 
+// A write verdict lives in body.status (non-zero when the server refuses the
+// message); a non-zero transport statusCode is the synthetic packet
+// LocoConnection.handleClose resolves with, so the outcome is unknown.
+function writeStatus(response: LocoPacket): number {
+  if (response.statusCode !== 0) return response.statusCode
+  const status = (response.body as Record<string, unknown> | undefined)?.status
+  return typeof status === 'number' ? status : 0
+}
+
 // Reject synthetic LocoConnection close packets ({ statusCode: -1, body.error: 'connection closed' })
 // and explicit body-level failures. Required for any SDK method whose response body has no
 // caller-visible error channel (e.g. GETMEM/MEMBER return `[]` for both empty rooms and dead
@@ -918,6 +927,13 @@ export class KakaoTalkClient {
 
   isConnected(): boolean {
     return this.state !== null && !this.closed
+  }
+
+  // Media sends ship bytes over a separate upload connection and then post the
+  // message. Replaying that on a fresh session after the original one died can
+  // deliver the same photo or file twice, so these run exactly once.
+  private async executeOnce<T>(operation: (state: SessionState) => Promise<T>): Promise<T> {
+    return operation(await this.ensureSession())
   }
 
   private async executeWithReconnect<T>(operation: (state: SessionState) => Promise<T>): Promise<T> {
@@ -1371,6 +1387,9 @@ export class KakaoTalkClient {
         const firstMemberResponse = await session.getAllMembers(parsedChatId)
         assertLocoOk(firstMemberResponse, 'GETMEM')
         const firstMembers = exactMemberRecords(firstMemberResponse.body.members ?? [], 'GETMEM')
+        if (firstMembers.records.length < firstChat.activeMembers) {
+          return await this.pagedMemberSnapshot(session, parsedChatId, normalizedChatId, firstChat, firstMemberResponse)
+        }
         const secondChatResponse = await session.getChannelInfo(parsedChatId)
         assertLocoOk(secondChatResponse, 'CHATINFO')
         const secondChat = channelMemberView(secondChatResponse.body as Record<string, unknown>, normalizedChatId)
@@ -1398,6 +1417,75 @@ export class KakaoTalkClient {
         throw wrapError(error, 'get_member_snapshot_failed')
       }
     })
+  }
+
+  // GETMEM returns at most 10 members per response, so a room with 11 or more
+  // members never matches activeMembersCount from one page (observed on a
+  // 12-member MultiChat: GETMEM 10, CHATINFO displayMembers = everyone but this
+  // account). Read the remaining pages by token, union them with the stable
+  // displayMembers, and fill the one missing slot with this account only when
+  // displayMembers is exactly everyone else. Any other count fails closed.
+  private async pagedMemberSnapshot(
+    session: LocoSession,
+    parsedChatId: Long,
+    normalizedChatId: string,
+    firstChat: ReturnType<typeof channelMemberView>,
+    firstPage: LocoPacket,
+  ): Promise<KakaoMemberSnapshot> {
+    const byId = new Map<string, Record<string, unknown>>()
+    const addPage = (packet: LocoPacket) => {
+      for (const record of exactMemberRecords(packet.body.members ?? [], 'GETMEM').records) {
+        const id = memberIdKey(record)!
+        byId.set(id, { ...byId.get(id), ...record })
+      }
+    }
+    addPage(firstPage)
+    const tokens = new Set<string>()
+    let token = firstPage.body.token
+    for (
+      let pages = 1;
+      byId.size < firstChat.activeMembers && token !== undefined && token !== null && pages < 20;
+      pages++
+    ) {
+      const key = longToString(token)
+      if (tokens.has(key)) break
+      tokens.add(key)
+      const page = await session.getAllMembers(parsedChatId, token)
+      assertLocoOk(page, 'GETMEM')
+      addPage(page)
+      token = page.body.token
+    }
+
+    const secondChatResponse = await session.getChannelInfo(parsedChatId)
+    assertLocoOk(secondChatResponse, 'CHATINFO')
+    const secondChat = channelMemberView(secondChatResponse.body as Record<string, unknown>, normalizedChatId)
+    if (firstChat.activeMembers !== secondChat.activeMembers || !sameIds(firstChat.ids, secondChat.ids)) {
+      throw new Error('member_snapshot_changed_or_incomplete')
+    }
+
+    const ids = new Set([...byId.keys(), ...secondChat.ids])
+    const self = this.userId
+    const extra: Array<Record<string, unknown>> = []
+    if (
+      self &&
+      !ids.has(self) &&
+      Number.isSafeInteger(Number(self)) &&
+      secondChat.ids.size === secondChat.activeMembers - 1 &&
+      ids.size === secondChat.activeMembers - 1
+    ) {
+      ids.add(self)
+      extra.push({ userId: Number(self) })
+    }
+    if (ids.size !== secondChat.activeMembers || (self && !ids.has(self))) {
+      throw new Error('member_snapshot_changed_or_incomplete')
+    }
+    return {
+      chat_id: normalizedChatId,
+      active_members: secondChat.activeMembers,
+      members: mergeMemberRecords([...byId.values()], [...secondChat.records, ...extra]).map(formatMember),
+      complete: true,
+      consistency_basis: 'chatinfo_display_plus_paged_getmem',
+    }
   }
 
   async getMembers(chatId: string): Promise<KakaoMember[]> {
@@ -1451,9 +1539,10 @@ export class KakaoTalkClient {
             ? await session.sendMessage(parseLong(chatId), text, mentions)
             : await session.sendMessage(parseLong(chatId), text)
 
+        const status = writeStatus(response)
         return {
-          success: response.statusCode === 0,
-          status_code: response.statusCode,
+          success: status === 0,
+          status_code: status,
           chat_id: chatId,
           log_id: longToString(response.body.logId),
           sent_at: response.body.sendAt as number,
@@ -1484,15 +1573,8 @@ export class KakaoTalkClient {
     const { session } = await this.ensureSession()
     try {
       const response = await session.modifyMessage(parsedChatId, parsedLogId, text)
-      // The edit verdict lives in body.status (e.g. -212 once the 24-hour window
-      // has passed); a non-zero transport statusCode is the synthetic packet
-      // LocoConnection.handleClose resolves with, so the outcome is unknown.
-      const status =
-        response.statusCode !== 0
-          ? response.statusCode
-          : typeof response.body.status === 'number'
-            ? response.body.status
-            : 0
+      // e.g. -212 once the 24-hour edit window has passed.
+      const status = writeStatus(response)
       const edited = response.body.modifiedChatLog as { revision?: unknown; message?: unknown } | undefined
       return {
         success: status === 0,
@@ -1740,7 +1822,7 @@ export class KakaoTalkClient {
 
     const parsedChatId = parseChatId(chatId)
 
-    return this.executeWithReconnect(async ({ session }) => {
+    return this.executeOnce(async ({ session }) => {
       try {
         const mshipResp = await session.shipMultiMedia(
           parsedChatId,
@@ -1807,9 +1889,10 @@ export class KakaoTalkClient {
           extra as unknown as Record<string, unknown>,
         )
 
+        const status = writeStatus(forwardResp)
         return {
-          success: forwardResp.statusCode === 0,
-          status_code: forwardResp.statusCode,
+          success: status === 0,
+          status_code: status,
           chat_id: chatId,
           log_id: longToString((forwardResp.body as Record<string, unknown>).logId),
           sent_at: ((forwardResp.body as Record<string, unknown>).sendAt as number | undefined) ?? 0,
@@ -1832,7 +1915,7 @@ export class KakaoTalkClient {
     errorCode: string
   }): Promise<KakaoSendResult> {
     const parsedChatId = parseChatId(opts.chatId)
-    return this.executeWithReconnect(async ({ session }) => {
+    return this.executeOnce(async ({ session }) => {
       try {
         const shipResp = await session.shipMedia(
           parsedChatId,
