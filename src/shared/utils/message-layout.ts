@@ -7,9 +7,11 @@
  * convention the senders agreed on (2026-10-29) is:
  *
  *   - a blank line after the opening line (greeting and first sentence), and
- *   - a blank line before every list item (`1.`, `2)`, `-`, `•`, `①` ...).
+ *   - a blank line before the first item of a list (`1.`, `2)`, `-`, `•`, `①` ...).
  *
- * Continuation lines inside an item may stay on a single line break.
+ * Items of the same list may follow each other on single line breaks (2026-10-30:
+ * “- Yellow …” then “- Purple …” is one list, not two paragraphs), and so may
+ * continuation lines inside an item.
  *
  * The check only reports problems. It never rewrites the text, because the
  * text that a person approved must be the text that is sent.
@@ -31,6 +33,16 @@ export function isListItemLine(line: string): boolean {
   return LIST_ITEM.test(line)
 }
 
+/** Whether the block glued to `index` from above (no blank line between) already holds a list item. */
+function continuesList(lines: readonly string[], index: number): boolean {
+  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+    const line = lines[cursor] ?? ''
+    if (line.trim().length === 0) return false
+    if (isListItemLine(line)) return true
+  }
+  return false
+}
+
 export function findMessageLayoutProblems(text: string): MessageLayoutProblem[] {
   const lines = text.replace(/\r\n?/g, '\n').split('\n')
   const problems: MessageLayoutProblem[] = []
@@ -39,7 +51,9 @@ export function findMessageLayoutProblems(text: string): MessageLayoutProblem[] 
     const previous = lines[index - 1] ?? ''
     if (line.trim().length === 0 || previous.trim().length === 0) continue
     if (isListItemLine(line)) {
-      problems.push({ kind: 'list_item_without_blank_line', line: index + 1, excerpt: line.trim().slice(0, 30) })
+      if (!continuesList(lines, index)) {
+        problems.push({ kind: 'list_item_without_blank_line', line: index + 1, excerpt: line.trim().slice(0, 30) })
+      }
     } else if (index === 1) {
       problems.push({ kind: 'opening_without_blank_line', line: index + 1, excerpt: line.trim().slice(0, 30) })
     }
@@ -54,7 +68,7 @@ export class MessageLayoutError extends Error {
   constructor(problems: readonly MessageLayoutProblem[]) {
     const where = problems.map((problem) => `line ${problem.line} ("${problem.excerpt}")`).join(', ')
     super(
-      `Message needs a blank line after the opening line and before each list item: ${where}. ` +
+      `Message needs a blank line after the opening line and before the first item of a list: ${where}. ` +
         'Add the blank lines and get the text approved again, or pass --allow-dense-layout to send it as is.',
     )
     this.name = 'MessageLayoutError'

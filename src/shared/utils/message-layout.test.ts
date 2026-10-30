@@ -22,12 +22,17 @@ describe('findMessageLayoutProblems', () => {
     expect(findMessageLayoutProblems(good)).toEqual([])
   })
 
-  it('flags list items that follow a line without a blank line', () => {
-    const dense = ['Hello, sorry for the delay.', '', '1. First.', '2. Second.', '- Third.'].join('\n')
+  it('flags a list that starts right after a paragraph line', () => {
+    const dense = ['Hello, sorry for the delay.', '', 'Two things:', '1. First.', '2. Second.'].join('\n')
     expect(findMessageLayoutProblems(dense).map((problem) => [problem.kind, problem.line])).toEqual([
       ['list_item_without_blank_line', 4],
-      ['list_item_without_blank_line', 5],
     ])
+  })
+
+  it('lets items of the same list follow each other (2026-10-30)', () => {
+    const reply = ['Hello, thanks for checking!', '', '- Yellow: aligned the tops', '- Purple: removed the repeated intro', '', 'Please send the team address.'].join('\n')
+    expect(findMessageLayoutProblems(reply)).toEqual([])
+    expect(findMessageLayoutProblems(['Hello.', '', '1. First.', 'more about it', '2. Second.'].join('\n'))).toEqual([])
   })
 
   it('flags a second paragraph glued to the opening line', () => {
@@ -44,7 +49,7 @@ describe('findMessageLayoutProblems', () => {
 
   it('reads Korean business messages the same way and handles CRLF', () => {
     const dense = '과장님, 답이 늦어 죄송합니다.\r\n1. 반영했습니다.\r\n2. 확인했습니다.'
-    expect(findMessageLayoutProblems(dense)).toHaveLength(2)
+    expect(findMessageLayoutProblems(dense)).toHaveLength(1)
     const good = '과장님, 답이 늦어 죄송합니다.\n\n1. 반영했습니다.\n\n2. 확인했습니다.'
     expect(findMessageLayoutProblems(good)).toEqual([])
   })
