@@ -38,6 +38,7 @@ export async function sendAction(
 
     const output = {
       ...message,
+      raw: undefined,
       id: message.id,
       content: message.content,
       author: message.author.displayName,
@@ -77,8 +78,11 @@ export async function listAction(
 
     const output = messages.map((msg: TeamsMessage) => ({
       ...msg,
+      raw: undefined,
       id: msg.id,
       content: msg.content,
+      html: msg.html,
+      files: msg.files,
       author: msg.author.displayName,
       timestamp: msg.timestamp,
       root_message_id: msg.root_message_id,
@@ -117,8 +121,11 @@ export async function repliesAction(
 
     const output = replies.map((msg: TeamsMessage) => ({
       ...msg,
+      raw: undefined,
       id: msg.id,
       content: msg.content,
+      html: msg.html,
+      files: msg.files,
       author: msg.author.displayName,
       timestamp: msg.timestamp,
       root_message_id: msg.root_message_id,
@@ -162,6 +169,7 @@ export async function searchAction(
 
     const output = results.map((result) => ({
       ...result,
+      raw: undefined,
       id: result.id,
       content: result.content,
       author: result.author.displayName,
@@ -229,8 +237,11 @@ export async function getAction(
 
     const output = {
       ...message,
+      raw: undefined,
       id: message.id,
       content: message.content,
+      html: message.html,
+      files: message.files,
       author: message.author.displayName,
       timestamp: message.timestamp,
     }

@@ -20,7 +20,7 @@ agent-teams message send <team-id> <channel-id> "Hello from AI agent!"
 
 ## Authentication
 
-Use `auth login` for work/school channel, directory, search and file operations. These use Microsoft bearer tokens from the saved device-code account. `auth extract` supplies only a Skype token for chat operations. Your tenant policies and delegated permissions still apply.
+Use `auth login` for work/school channel, directory, search and Graph-backed file operations; accounts set up with `auth extract` fall back to the older Teams CSA routes for channel, member and file commands. These use Microsoft bearer tokens from the saved device-code account. `auth extract` supplies a Skype token for chats, legacy discovery and trusted Teams-hosted inline downloads. Your tenant policies and delegated permissions still apply.
 
 An expired device-code login is refreshed for the same account. If refresh fails, the CLI does not replace it with a different desktop/browser identity. Run `auth login` explicitly to reconnect.
 
@@ -152,7 +152,12 @@ agent-teams message delete <channel-id> <message-id> --force
 
 # Reply to a message (thread)
 agent-teams message reply <channel-id> <message-id> "Reply content"
+
+# Get a single chat message
+agent-teams chat get <chat-id> <message-id>
 ```
+
+Messages read from chats and channels include `content` (plain text), with optional `html` (original HTML for rich-text messages) and `files` (downloadable URLs: inline images first, in order, then attachments). Both are omitted when a message has none. Pass a `files` URL to `file download`; SharePoint/OneDrive URLs require `agent-teams auth login` (cookie-only `auth extract` credentials cannot download them).
 
 ### Chat Commands
 
@@ -223,6 +228,9 @@ agent-teams file info <channel-id> <file-id>
 
 # Download file
 agent-teams file download <file-id> <output-path>
+
+# Download a URL from a message's `files` (inline image or attachment)
+agent-teams file download <url> [output-path]
 ```
 
 ### Snapshot Command
@@ -293,8 +301,9 @@ listener.on('message', async (message) => {
 await listener.start()
 ```
 
-Each `message` is a `TeamsRealtimeMessage`. Alongside the unchanged
-`chatId`/`content`/`author`, it carries `conversationType` (`'chat'` or
+Each `message` is a `TeamsRealtimeMessage`. Alongside `chatId`/`author` and
+`content` (plain text with paragraph breaks), optional `html`/`files` (same as
+for read commands), it carries `conversationType` (`'chat'` or
 `'channel'`), `teamId`/`channelId` (set for channel messages, for use with
 `sendMessage`), and `mentions` (always present, empty when there are no
 `@mentions`; each is `{ id, mri?, displayName }`).
@@ -389,7 +398,7 @@ Preserve the server receipt. If a write fails or its response is lost, inspect e
 
 ## Message fidelity and pagination
 
-History and message commands retain the legacy text fields and additionally return `raw_content`, `content_type`, `mentions`, `attachments`, and the original server `raw` object. Chat history includes media and system records. Search returns an indexed preview with its original result in `raw`; fetch the exact message for the full body.
+History and message commands retain the legacy text fields and additionally return `raw_content`, `content_type`, `mentions` and `attachments`. Chat history includes media records; pass `--include-system` to also include membership, call and other system records. Search returns an indexed preview; fetch the exact message for the full body.
 
 Channel history and replies follow Graph pagination up to `--limit`. Chat history follows message pages by default; resumable single-page output is explicit:
 

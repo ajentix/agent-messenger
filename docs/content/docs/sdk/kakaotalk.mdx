@@ -143,6 +143,38 @@ reports `consistency_basis: 'chatinfo_display_plus_paged_getmem'`.
 
 Each `KakaoMember` includes `user_id`, `nickname`, profile image URLs, `status_message`, `country_iso`, `user_type` (nullable; `null` when the server omits the field), and open-chat-only fields (`open_token`, `open_profile_link_id`, `open_permission` — the last is the OpenChannelUserPerm bitfield: `1`=OWNER, `2`=NONE, `4`=MANAGER, `8`=BOT).
 
+### Read Status
+
+```typescript
+import { KakaoTalkClient, computeReadStatus } from 'agent-messenger/kakaotalk'
+
+// Seed: the last log ID each member has read in the chat
+const watermarks = await client.getReadWatermarks('9876543210')
+// → KakaoReadWatermarks {
+//     chat_id: '9876543210',
+//     watermarks: [
+//       { user_id: '1234567890', watermark: '3846830417126748160' },
+//       { user_id: '2345678901', watermark: '3846830417126000000' },
+//     ],
+//   }
+
+// Who has read a specific message
+const status = computeReadStatus(watermarks, '3846830417126748160', {
+  senderId: '1234567890', // the message's author — never counted
+})
+// → KakaoReadStatus {
+//     chat_id: '9876543210',
+//     log_id: '3846830417126748160',
+//     unread_count: 1,
+//     read_by: [],
+//     unread_by: ['2345678901'],
+//   }
+```
+
+A member has read the message once their watermark is at or past its log ID (`watermark >= log_id`, compared exactly as 64-bit integers). Pass the message's sender as `senderId` (and optionally `excludeUserIds`, e.g. yourself) — excluded members are never counted, so `unread_count` matches the number KakaoTalk shows next to the message.
+
+`getReadWatermarks` sends CHATONROOM, the room-entry command: the server may clear your own unread count for that chat (see #315), so call it on demand — never from passive polling. It is also a seed-once call: the server includes the `a` (member ids) / `w` (watermarks) arrays only on the first CHATONROOM for a chat within a LOCO session, so a repeat call throws `KakaoTalkError('get_read_watermarks_failed')`. Seed once per session, then advance watermarks from `KakaoTalkListener` `read` events (DECUNREAD pushes; a watermark only moves forward). When the listener emits `disconnected`, drop the seed so the next call re-seeds in the new session. For a side-effect-free live feed, rely on `read` events instead of polling CHATONROOM.
+
 ### Sending
 
 ```typescript
@@ -168,7 +200,7 @@ await client.sendMessage('9876543210', '@리트머스 유영준 확인하였습�
 
 `KakaoMention` is `{ at: number[], len: number, user_id: number }`. `at` contains 1-based `@` occurrence numbers in the entire text; `len` is the nickname's character count including spaces. For `@가 @나 @가`, 가 has `[1,3]` and 나 has `[2]`.
 
-A text mention uses WRITE type 1 with `extra: JSON.stringify({ mentions })`. A reply uses type 26 with this `KakaoReplyExtra` shape:
+A text mention uses WRITE type 1 with `extra: JSON.stringify({ mentions })`. A reply uses type 26 with this `KakaoReplyExtra` shape (in open chats `src_linkId` is the room's link id, resolved automatically from the login snapshot or a read-only `CHATINFO` lookup):
 
 ```json
 {
@@ -176,12 +208,14 @@ A text mention uses WRITE type 1 with `extra: JSON.stringify({ mentions })`. A r
   "src_type": 1,
   "src_logId": "3961980999585314818",
   "src_linkId": 0,
-  "src_userId": 437696862,
+  "src_userId": "437696862",
   "src_message": "원문"
 }
 ```
 
-The source preview is limited to 100 characters. Source log IDs remain strings to preserve 64-bit precision with the existing JSON serializer. Plain text without mentions (including `mentions: []`) retains the original WRITE without `extra` and skips member lookup. Replies without mentions carry `mentions: []` and the same source fields.
+The source preview is limited to 100 characters. Source log IDs, user IDs and the link id are decimal strings in the SDK and are written to the wire as bare 64-bit integers, so they never lose precision. Plain text without mentions (including `mentions: []`) retains the original WRITE without `extra` and skips member lookup. Replies without mentions carry `mentions: []` and the same source fields.
+
+`success` is `true` only when `status_code` is `0` and the server returned a non-zero `log_id`. An acknowledgment with `status_code: 0` and `log_id: '0'` created no message, so it is reported as `success: false`. Quoted replies (`sendMessage(chatId, text, { replyTo })`) in open chats get the room's `src_linkId` automatically, from the login snapshot or, when the room is missing there, from a read-only `CHATINFO` lookup.
 
 #### Attachments
 
@@ -417,6 +451,9 @@ import type {
   KakaoChat,
   KakaoMember,
   KakaoMessage,
+  KakaoReadStatus,
+  KakaoReadWatermark,
+  KakaoReadWatermarks,
   KakaoSendResult,
   KakaoEditResult,
   KakaoReadStateResult,

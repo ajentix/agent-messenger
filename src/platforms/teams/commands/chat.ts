@@ -41,7 +41,7 @@ export async function listAction(options: { pretty?: boolean }): Promise<void> {
 
 export async function historyAction(
   chatId: string,
-  options: { limit?: number; pretty?: boolean; page?: boolean; cursor?: string },
+  options: { limit?: number; pretty?: boolean; page?: boolean; cursor?: string; includeSystem?: boolean },
 ): Promise<void> {
   try {
     const credManager = new TeamsCredentialManager()
@@ -60,18 +60,57 @@ export async function historyAction(
     })
     const limit = options.limit && options.limit > 0 ? options.limit : 50
     const page =
-      options.page || options.cursor ? await client.getChatMessagesPage(chatId, limit, options.cursor) : undefined
-    const messages = page?.messages ?? (await client.getChatMessages(chatId, limit))
+      options.page || options.cursor
+        ? await client.getChatMessagesPage(chatId, limit, options.cursor, { includeSystem: options.includeSystem })
+        : undefined
+    const messages =
+      page?.messages ?? (await client.getChatMessages(chatId, limit, { includeSystem: options.includeSystem }))
 
     const output = messages.map((msg) => ({
       ...msg,
+      raw: undefined,
       id: msg.id,
       author: msg.author.displayName,
       content: msg.content,
+      html: msg.html,
+      files: msg.files,
       timestamp: msg.timestamp,
     }))
 
     console.log(formatOutput(page ? { messages: output, next_cursor: page.next_cursor } : output, options.pretty))
+  } catch (error) {
+    handleError(error as Error)
+  }
+}
+
+export async function getAction(chatId: string, messageId: string, options: { pretty?: boolean }): Promise<void> {
+  try {
+    const credManager = new TeamsCredentialManager()
+    const cred = await credManager.getTokenWithExpiry()
+
+    if (!cred) {
+      console.log(formatOutput({ error: 'Not authenticated. Run "auth extract" first.' }, options.pretty))
+      process.exit(1)
+    }
+
+    const client = await new TeamsClient().login({
+      token: cred.token,
+      tokenExpiresAt: cred.tokenExpiresAt,
+      accountType: cred.accountType,
+      region: cred.region,
+    })
+    const message = await client.getChatMessage(chatId, messageId)
+
+    const output = {
+      id: message.id,
+      author: message.author.displayName,
+      content: message.content,
+      html: message.html,
+      files: message.files,
+      timestamp: message.timestamp,
+    }
+
+    console.log(formatOutput(output, options.pretty))
   } catch (error) {
     handleError(error as Error)
   }
@@ -109,6 +148,7 @@ export async function sendAction(
 
     const output = {
       ...message,
+      raw: undefined,
       id: message.id,
       content: message.content,
       timestamp: message.timestamp,
@@ -150,6 +190,7 @@ export async function editAction(
 
     const output = {
       ...message,
+      raw: undefined,
       id: message.id,
       content: message.content,
       timestamp: message.timestamp,
@@ -176,6 +217,7 @@ export const chatCommand = new Command('chat')
       .option('--limit <n>', 'Number of messages to fetch', '50')
       .option('--page', 'Return one archive page with next_cursor')
       .option('--cursor <url>', 'Continue from a returned archive cursor')
+      .option('--include-system', 'Include membership, call and other system records')
       .option('--pretty', 'Pretty print JSON output')
       .action((chatId, options) => {
         return historyAction(chatId, {
@@ -183,8 +225,17 @@ export const chatCommand = new Command('chat')
           pretty: options.pretty,
           page: options.page,
           cursor: options.cursor,
+          includeSystem: options.includeSystem,
         })
       }),
+  )
+  .addCommand(
+    new Command('get')
+      .description('Get a single chat message')
+      .argument('<chat-id>', 'Chat ID')
+      .argument('<message-id>', 'Message ID')
+      .option('--pretty', 'Pretty print JSON output')
+      .action(getAction),
   )
   .addCommand(
     new Command('send')

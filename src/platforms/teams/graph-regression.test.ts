@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
 
 import { TeamsClient } from './client'
-import { messageText } from './graph'
+import { teamsHtmlToText } from './message-content'
 
 describe('Teams Graph transport regressions', () => {
   const originalFetch = globalThis.fetch
@@ -61,8 +61,8 @@ describe('Teams Graph transport regressions', () => {
   })
 
   it('does not duplicate line breaks added as HTML source formatting by Teams', () => {
-    expect(messageText('First<br>\nsecond<br>\r\nthird')).toBe('First\nsecond\nthird')
-    expect(messageText('First<br>\n<br>\r\nthird')).toBe('First\n\nthird')
+    expect(teamsHtmlToText('First<br>\nsecond<br>\r\nthird')).toBe('First\nsecond\nthird')
+    expect(teamsHtmlToText('First<br>\n<br>\r\nthird')).toBe('First\n\nthird')
   })
 
   it('accepts the empty 200 response returned after a successful Skype chat edit', async () => {
@@ -147,7 +147,7 @@ describe('Teams Graph transport regressions', () => {
     const raw = { ...message(), replyToId: 'root-1' }
     respond({ value: [raw] })
     const [item] = await client.getThreadReplies('team-1', 'channel-1', 'root-1', 5)
-    expect(item.content).toBe('First & second\nNext\nline')
+    expect(item.content).toBe('First & second\n\nNext\nline')
     expect((item as any).raw).toEqual(raw)
     expect((item as any).attachments).toEqual(raw.attachments)
     expect((item as any).mentions).toEqual(raw.mentions)

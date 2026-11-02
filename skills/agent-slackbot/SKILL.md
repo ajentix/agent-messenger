@@ -1,7 +1,7 @@
 ---
 name: agent-slackbot
 description: Interact with Slack workspaces using bot tokens - send messages, read channels, manage reactions
-version: 2.39.0
+version: 2.40.0
 allowed-tools: Bash(agent-slackbot:*)
 metadata:
   openclaw:
@@ -205,6 +205,9 @@ agent-slackbot message get <channel> <ts>
 # Get thread replies (includes parent message)
 agent-slackbot message replies <channel> <thread_ts>
 agent-slackbot message replies C0ACZKTDDC0 1234567890.123456 --limit 50
+
+# Integration posts (alerting webhooks, CI bots) often have an empty "text";
+# list/get/replies then include their content in "attachments" and "blocks"
 
 # Edit a message (bot's own messages only)
 agent-slackbot message edit <channel> <ts> <new-text>

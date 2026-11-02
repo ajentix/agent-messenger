@@ -250,6 +250,8 @@ agent-kakaotalk message send <chat-id> "@리트머스 유영준 확인하였습�
 
 Mentions use numeric `user_id`, `len` counts the nickname's characters including spaces, and `at` lists the 1-based `@` occurrence numbers in the whole text. For `@가 @나 @가`, 가 has `[1,3]` and 나 has `[2]`. Targets with identical room nicknames are rejected as ambiguous. Without mentions, plain text retains the original WRITE without `extra`.
 
+> **SDK watermark API**: For a one-shot CLI answer use `message unread --enter-room` above. For long-running code that needs to answer "who has read this message?" over time, use [`getReadWatermarks` and `computeReadStatus`](../sdk/kakaotalk#read-status) to answer "who has read this message?". `getReadWatermarks` returns a one-time snapshot; the SDK does not keep it up to date. Because it sends `CHATONROOM`, which enters the room and may clear your own unread count (#315), call it once per chat per LOCO session. Your code owns the snapshot from then on: apply listener `read` events to your stored watermarks, only ever moving a watermark forward, instead of polling. On `disconnected`, discard the stored watermarks and seed each chat again after the reconnect.
+
 #### Sending Attachments
 
 `message upload` sends photos, videos, audio, and arbitrary files to a chat. The CLI sniffs the MIME type from the filename and dispatches to the matching KakaoTalk message type, so the common case is a single command and a file path:

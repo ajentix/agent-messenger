@@ -4,7 +4,7 @@ Use the account and exact destinations authorized by the user. Channel names are
 
 ## Sign in and resolve the destination
 
-Work/school channels, directory, files and search require device-code authentication. Sign in once, then let the CLI refresh the same account silently:
+Device-code authentication is recommended for work/school accounts: it enables Graph-backed channel, directory and file operations and is required for search. Accounts set up with `auth extract` keep channel, directory, reaction and file commands through the older CSA routes, but cannot search. Sign in once, then let the CLI refresh the same account silently:
 
 ```bash
 agent-teams auth login --email user@example.com --account-type work
@@ -72,9 +72,9 @@ agent-teams chat history "$CHAT_ID" --page --limit 50
 agent-teams chat history "$CHAT_ID" --cursor "$NEXT_CURSOR" --limit 50
 ```
 
-Default history returns an array and follows pages. `--page` or `--cursor` returns `{messages, next_cursor}`. Follow cursors until absent and persist your position for resumable collection. Chat media and system records are retained. `content` is rendered text; `raw_content`, `content_type`, `mentions`, `attachments` and `raw` retain the server representation. HTML source newlines after `<br>` do not add duplicate blank lines.
+Default history returns an array and follows pages. `--page` or `--cursor` returns `{messages, next_cursor}`. Follow cursors until absent and persist your position for resumable collection. Chat media records are retained; add `--include-system` for membership, call and other system records. `content` is rendered text; `raw_content`, `content_type`, `mentions` and `attachments` retain the server representation. HTML source newlines after `<br>` do not add duplicate blank lines.
 
-Search uses Substrate and returns indexed previews, with original results in `raw`. Plain previews preserve literal angle brackets and entities. Use exact history/get to retrieve the full source message. Search may lag newly sent messages.
+Search uses Substrate and returns indexed previews. Plain previews preserve literal angle brackets and entities. Use exact history/get to retrieve the full source message. Search may lag newly sent messages.
 
 ## Read-only polling
 
@@ -91,7 +91,7 @@ Device-code refresh happens in the CLI. Stop and reconnect if it fails. Polling 
 
 ## Files and mentions
 
-Channel file commands use Graph drive folders:
+Channel file commands use Graph drive folders (accounts set up with `auth extract` fall back to the older CSA file routes):
 
 ```bash
 agent-teams file list "$TEAM_ID" "$CHANNEL_ID"
@@ -100,6 +100,16 @@ agent-teams file download "$TEAM_ID" "$CHANNEL_ID" "$FILE_ID" ./downloaded.txt
 ```
 
 Upload places a file in the folder; it does not attach it to a message. An existing filename can be replaced, so resolve a unique name before an authorized upload. File metadata in a message does not download the binary automatically.
+
+To save a message's inline images and attachments, download each URL in its `files` field (inline images first, then attachments):
+
+```bash
+agent-teams chat get "$CHAT_ID" "$MESSAGE_ID" | jq -r '.files // [] | .[]' | while read -r URL; do
+  mkdir -p ./downloads && agent-teams file download "$URL" ./downloads | jq -r '.path'
+done
+```
+
+`chat history`, `message list/get/replies` and `channel history` return the same `html`/`files` fields. Inline images work with any signed-in account; SharePoint/OneDrive attachments need `auth login`.
 
 Raw `<at>` markup by itself is not a verified notification mention. Graph posts require a matching `mentions` payload, which the current send interface does not expose. Do not claim a user was notified merely because text looks like a mention.
 

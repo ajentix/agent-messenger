@@ -8,13 +8,34 @@ import { formatOutput } from '@/shared/utils/output'
 
 import { SlackClient } from '../client'
 import { CredentialManager } from '../credential-manager'
+import type { SlackFile } from '../types'
+
+function toFileOutput(file: SlackFile) {
+  return {
+    id: file.id,
+    name: file.name,
+    title: file.title,
+    mimetype: file.mimetype,
+    size: file.size,
+    url_private: file.url_private,
+    created: file.created,
+    user: file.user,
+    channels: file.channels,
+  }
+}
 
 async function uploadAction(
   channel: string,
-  path: string,
-  options: { filename?: string; pretty?: boolean },
+  paths: string[],
+  options: { filename?: string; thread?: string; comment?: string; title?: string; pretty?: boolean },
 ): Promise<void> {
   try {
+    if (options.filename && paths.length > 1) {
+      console.log(formatOutput({ error: '--filename can only be used with a single file' }, options.pretty))
+      process.exit(1)
+      return
+    }
+
     const credManager = new CredentialManager()
     const workspace = await credManager.getWorkspace()
 
@@ -26,25 +47,37 @@ async function uploadAction(
     const client = await new SlackClient().login({ token: workspace.token, cookie: workspace.cookie })
     channel = await client.resolveChannel(channel)
 
-    const filePath = resolve(path)
-    const fileBuffer = readFileSync(filePath)
-    const filename = options.filename || filePath.split('/').pop() || 'file'
+    if (paths.length === 1) {
+      const filePath = resolve(paths[0])
+      const fileBuffer = readFileSync(filePath)
+      const filename = options.filename || basename(filePath) || 'file'
 
-    const file = await client.uploadFile([channel], fileBuffer, filename)
+      const file = await client.uploadFile([channel], fileBuffer, filename, {
+        thread_ts: options.thread,
+        title: options.title,
+        initial_comment: options.comment,
+      })
 
-    const output = {
-      id: file.id,
-      name: file.name,
-      title: file.title,
-      mimetype: file.mimetype,
-      size: file.size,
-      url_private: file.url_private,
-      created: file.created,
-      user: file.user,
-      channels: file.channels,
+      console.log(formatOutput(toFileOutput(file), options.pretty))
+      return
     }
 
-    console.log(formatOutput(output, options.pretty))
+    const uploads = paths.map((path) => {
+      const filePath = resolve(path)
+      return {
+        file: readFileSync(filePath),
+        filename: basename(filePath) || 'file',
+      }
+    })
+
+    const files = await client.uploadFiles(uploads, {
+      channel,
+      threadTs: options.thread,
+      comment: options.comment,
+      title: options.title,
+    })
+
+    console.log(formatOutput(files.map(toFileOutput), options.pretty))
   } catch (error) {
     handleError(error as Error)
   }
@@ -188,10 +221,13 @@ export const fileCommand = new Command('file')
   .description('File commands')
   .addCommand(
     new Command('upload')
-      .description('Upload file to channel')
+      .description('Upload files to channel (several files are grouped into one message)')
       .argument('<channel>', 'channel ID or name')
-      .argument('<path>', 'file path')
-      .option('--filename <name>', 'override filename')
+      .argument('<paths...>', 'file paths')
+      .option('--filename <name>', 'override filename (single file only)')
+      .option('--thread <ts>', 'post the files as a reply in this thread')
+      .option('--comment <text>', 'message text attached to the files')
+      .option('--title <title>', 'title applied to every file')
       .option('--pretty', 'Pretty print JSON output')
       .action(uploadAction),
   )

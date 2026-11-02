@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, spyOn, it } from 'bun:test'
 
 import { TeamsClient } from '../client'
 import { TeamsCredentialManager } from '../credential-manager'
-import { listAction } from './team'
+import { listAction, switchAction } from './team'
 
 let clientListTeamsSpy: ReturnType<typeof spyOn>
 let clientListJoinedTeamsSpy: ReturnType<typeof spyOn>
@@ -78,6 +78,25 @@ it('list: uses live team display names for a device-code account', async () => {
       { id: 'team-1', name: 'Actual Team', current: true },
     ])
     expect(clientListJoinedTeamsSpy).toHaveBeenCalledTimes(1)
+  } finally {
+    output.mockRestore()
+  }
+})
+
+it('switch: accepts a Graph-listed team that was not in the cached team map', async () => {
+  // given: a device-code account whose cache lacks a team Graph reports
+  const config = (await new TeamsCredentialManager().loadConfig())!
+  config.accounts.work.auth_method = 'device-code'
+  clientListJoinedTeamsSpy.mockResolvedValue([{ id: 'team-3', name: 'New Team' }])
+  const output = spyOn(console, 'log').mockImplementation(() => {})
+  try {
+    // when
+    await listAction({})
+    await switchAction('team-3', {})
+
+    // then
+    expect(config.accounts.work.teams['team-3']).toEqual({ team_id: 'team-3', team_name: 'New Team' })
+    expect(credManagerSetCurrentTeamSpy).toHaveBeenCalledWith('team-3', 'New Team')
   } finally {
     output.mockRestore()
   }

@@ -19,6 +19,8 @@ export async function listAction(options: { pretty?: boolean }): Promise<void> {
         region: account.region,
       })
       teams = (await client.listJoinedTeams()).map((team) => ({ team_id: team.id, team_name: team.name }))
+      // `team switch` validates against the cached map, so Graph-only teams must be cached to be selectable.
+      await credManager.cacheTeams(teams)
     }
 
     const output = teams.map((team) => ({

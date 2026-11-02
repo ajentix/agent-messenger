@@ -1,7 +1,7 @@
 ---
 name: agent-kakaotalk
 description: Interact with KakaoTalk - send messages, read chats, manage conversations
-version: 2.39.0
+version: 2.40.0
 allowed-tools: Bash(agent-kakaotalk:*)
 metadata:
   openclaw:
@@ -411,9 +411,13 @@ agent-kakaotalk message send <chat-id> "@리트머스 유영준 @김민수 확�
 agent-kakaotalk message send <chat-id> "@리트머스 유영준 확인하였습니다." --mention 437696862 --reply-to 3961980999585314818
 ```
 
-`--reply-to <log-id>` resolves the source from the latest 100 messages. An absent source fails without sending. The quote includes the first 100 characters of the source text and `src_linkId: 0`.
+`--reply-to <log-id>` resolves the source from the latest 100 messages. An absent source fails without sending. The quote includes the first 100 characters of the source text and `src_linkId: 0` in normal chats.
 
 Mentions use numeric `user_id`, `len` counts the nickname's characters including spaces, and `at` lists the 1-based `@` occurrence numbers in the whole text. For `@가 @나 @가`, 가 has `[1,3]` and 나 has `[2]`. Targets with identical room nicknames are rejected as ambiguous. Without mentions, plain text retains the original WRITE without `extra`.
+
+In open chats (오픈채팅) the reply also carries the room's link id as `src_linkId`. The CLI resolves it on its own: from the login snapshot when the room is there, otherwise through a read-only `CHATINFO` lookup that does not change read state. You never pass `--link-id` for a reply. The open-chat reply bubble itself has not been checked against a live server yet.
+
+A send counts as delivered only when the server returns a non-zero `log_id`. A `WRITE` acknowledgment with `status_code: 0` but `log_id: "0"` is reported as `"success": false` and the process exits non-zero, because no message was created.
 
 #### Sending Attachments
 
@@ -517,6 +521,21 @@ Notes:
 - `CHATONROOM` is the request KakaoTalk sends when a room is opened, which `message list` and `member list` deliberately avoid. It is not `NOTIREAD` and does not mark messages read, but the command refuses to run without `--enter-room` so the room entry is always an explicit choice.
 - The count excludes your own account. Members missing from the response are not counted.
 - If the server returns no watermarks (for example in very large rooms), the command fails with `read_state_unavailable` instead of guessing.
+
+#### Read Status
+
+The SDK also exposes per-member watermarks (the CLI equivalent is `message unread` above): `getReadWatermarks(chatId)` seeds each member's
+last-read `log_id`, and `computeReadStatus(...)` reports who has read a message.
+A member counts as having read it iff `watermark >= log_id`; always exclude the
+message sender (and any other caller-selected IDs) from the calculation.
+
+`getReadWatermarks` sends `CHATONROOM`, a room-entry call that may clear your own
+unread count (#315), and the server returns watermarks only on the first
+`CHATONROOM` for a chat in a session. Call it once per chat per LOCO session.
+The result is a snapshot the SDK never updates: store it yourself and advance
+each watermark from listener `read` events (`DECUNREAD` pushes), only ever
+forward. Do not poll `CHATONROOM`. On `disconnected`, drop the stored
+watermarks; after the reconnect you may seed each chat once again.
 
 #### Mark as Read
 

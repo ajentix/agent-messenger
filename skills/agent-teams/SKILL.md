@@ -1,7 +1,7 @@
 ---
 name: agent-teams
 description: Interact with Microsoft Teams - send messages, read channels, manage reactions
-version: 2.39.0
+version: 2.40.0
 allowed-tools: Bash(agent-teams:*)
 metadata:
   openclaw:
@@ -39,7 +39,7 @@ agent-teams channel list <team-id>
 Choose authentication by the required operations:
 
 1. **`agent-teams auth login`** (work/school **or** personal Microsoft accounts) — device-code sign-in. Open the printed URL, enter the code, and approve in your browser. No desktop app or browser extraction needed. It prompts for your Microsoft email (or pass `--email <email>`) and auto-detects work vs personal, then starts the matching flow; pass `--account-type work|personal` to force it and skip detection. Only `auth login` stores the AAD refresh token required by `message search`.
-2. **`agent-teams auth extract`** supplies a Skype token from desktop/browser cookies for chats and legacy discovery. It cannot mint the Graph/Substrate tokens required by channel, directory, file and search operations.
+2. **`agent-teams auth extract`** supplies a Skype token from desktop/browser cookies for chats and legacy discovery. It cannot mint Graph/Substrate tokens, so channel, member and file commands fall back to the older Teams CSA routes and `message search` is unavailable.
 
 Automatic extraction can happen when no device-code account is stored. If any stored account uses device-code, automatic extraction is suppressed, including when another account type is selected. A failed refresh therefore cannot overwrite a deliberate login with another desktop/browser identity.
 
@@ -219,11 +219,13 @@ agent-teams message send <team-id> <channel-id> "## Deploy done
 agent-teams message list <team-id> <channel-id>
 agent-teams message list <team-id> 19:abc123@thread.tacv2 --limit 50
 
-# Get a single message by ID
+# Get a single message by ID (add --thread for a reply)
 agent-teams message get <team-id> <channel-id> <message-id>
+agent-teams message get <team-id> <channel-id> <reply-id> --thread <root-message-id>
 
-# Delete a message
+# Delete a message (add --thread for a reply)
 agent-teams message delete <team-id> <channel-id> <message-id> --force
+agent-teams message delete <team-id> <channel-id> <reply-id> --thread <root-message-id> --force
 
 # Search messages across Teams (requires `auth login` — see Authentication)
 agent-teams message search <query>
@@ -254,8 +256,15 @@ For personal Microsoft accounts (`@outlook.com` / `@live.com`) that have no team
 # List 1:1, group, and self chats
 agent-teams chat list
 
-# Get chat message history
+# Get chat message history (follows pages, returns an array)
 agent-teams chat history <chat-id> --limit 100
+
+# Read one page at a time; returns { "messages": [...], "next_cursor": "..." }
+agent-teams chat history <chat-id> --page --limit 50
+agent-teams chat history <chat-id> --cursor "$NEXT_CURSOR" --limit 50
+
+# Get a single chat message
+agent-teams chat get <chat-id> <message-id>
 
 # Send a message to a chat
 agent-teams chat send <chat-id> "Hello"
@@ -272,6 +281,19 @@ agent-teams chat edit <chat-id> <message-id> "Fixed \`bug\`" --format markdown
 Chat IDs look like `19:guid1_guid2@unq.gbl.spaces` (1:1) or `19:guid@thread.tacv2` (group). Get them from `chat list`. The `48:notes` chat (`type: self`) is your personal "to me" notes thread.
 
 `chat edit` only works on your own messages, and only for chats — Teams channel messages are not editable through this API.
+
+### Message Content (text, HTML, files)
+
+Messages from `chat history`, `chat get`, `message list/get/replies`, and `channel history` include:
+
+- `content` — plain text (paragraphs as newlines, links as `text (url)`; numeric and common named entities such as `&amp;`, `&nbsp;`, `&mdash;` are decoded, rarer named entities stay literal)
+- `html` — the original HTML, only for rich-text messages; use it to see where images sit in the text
+- `files` — every downloadable URL in the message: inline images first (in order), then attachments
+- `raw_content`, `content_type`, `mentions`, `attachments` — the server representation, kept alongside the rendered fields (not in `chat get`; the full server object is SDK-only as `raw`) (`edited_at`/`deleted_at` and thread fields appear on channel messages when set)
+
+`message search` results carry `id`, `channel_id`, `thread_id`, `author`, `content` (indexed preview), `timestamp`, optional `team_name`/`channel_name`/`permalink`.
+
+Download any `files` entry with `agent-teams file download <url> [output-path]`.
 
 ### Message Formatting
 
@@ -341,12 +363,14 @@ agent-teams user me
 ### Reaction Commands
 
 ```bash
-# Add reaction (use emoji name)
+# Add reaction (Unicode emoji, or like/heart/laugh/surprised/sad/angry)
 agent-teams reaction add <team-id> <channel-id> <message-id> <emoji>
 agent-teams reaction add <team-id> 19:abc123@thread.tacv2 1234567890 like
+agent-teams reaction add <team-id> <channel-id> <reply-id> 👍 --thread <root-message-id>
 
-# Remove reaction
+# Remove reaction (add --thread for a reply)
 agent-teams reaction remove <team-id> <channel-id> <message-id> <emoji>
+agent-teams reaction remove <team-id> <channel-id> <reply-id> like --thread <root-message-id>
 ```
 
 ### File Commands
@@ -366,9 +390,14 @@ agent-teams file info <team-id> <channel-id> <file-id>
 agent-teams file download <team-id> <channel-id> <file-id>
 agent-teams file download <team-id> <channel-id> <file-id> ./report.pdf
 agent-teams file download <team-id> <channel-id> <file-id> ./downloads/ --pretty
+
+# Download a URL from a message's `files` (inline image or attachment)
+agent-teams file download <url> ./downloads/
 ```
 
-`file download` returns `{ "id", "name", "size", "content_type", "path" }`. Channel file list/upload/download use Graph drive folders and require `auth login`. Upload places a file in the folder and does not attach it to a chat message. Message attachment metadata is retained separately; it does not imply binary download support for every attachment.
+URL download output: `{ "name", "size", "content_type", "path" }`. When the response has no filename, inline images fall back to their Teams object id (e.g. `0-skr-d1-....jpg`).
+
+`file download` returns `{ "id", "name", "size", "content_type", "path" }`. Inline/image attachments download with the extracted Skype token and work for any signed-in account. SharePoint/OneDrive documents and channel file list/upload/download use Microsoft Graph and require `auth login`. Upload places a file in the folder and does not attach it to a chat message.
 
 ### Snapshot Command
 
@@ -404,9 +433,9 @@ With `--full`, returns comprehensive JSON with:
 
 ## Output Format
 
-Message reads retain `raw_content`, `content_type`, `mentions`, `attachments` and `raw` alongside rendered `content`. HTML source newlines after `<br>` do not create duplicate blank lines. Media and system records remain in chat history. Default history returns an array and follows pages; `chat history --page` or `--cursor` returns `{messages, next_cursor}` for resumable reads. Search returns indexed previews and `raw`; plain previews preserve literal angle brackets and entities. Use exact history/get for full source messages.
+Channel `message list/get/replies` and `chat history` retain `raw_content`, `content_type`, `mentions` and `attachments` alongside rendered `content`. HTML source newlines after `<br>` do not create duplicate blank lines. Media records remain in chat history; membership, call and other system records are hidden unless you pass `chat history --include-system`. Default history returns an array and follows pages; `chat history --page` or `--cursor` returns `{messages, next_cursor}` for resumable reads. Search returns indexed previews; plain previews preserve literal angle brackets and entities. Use exact history/get for full source messages.
 
-Replies require `--thread <root-message-id>` for `message get`, `message delete`, `reaction add` and `reaction remove`. Reaction input accepts Unicode or the names `like`, `heart`, `laugh`, `surprised`, `sad`, `angry`. The client converts those names to Graph Unicode. Channel deletion reads the exact Graph target first, then uses Chat Service with the existing Skype token. It does not require adding Graph `ChannelMessage.ReadWrite`; Teams ownership and deletion policy still apply. An uncertain delete is not replayed or retried through another API.
+Replies require `--thread <root-message-id>` for `message get`, `message delete`, `reaction add` and `reaction remove`. Reaction input accepts Unicode or the names `like`, `heart`, `laugh`, `surprised`, `sad`, `angry`. The client converts those names to Graph Unicode. Channel deletion reads the exact Graph target first, then uses Chat Service with the existing Skype token. This avoids a Graph DELETE call, but Chat Service can still return 403 when the account lacks permission to delete the message; Teams ownership and deletion policy still apply. An uncertain delete is not replayed or retried through another API.
 
 GET requests retry transient rate limits/server errors. Search POST and mutations run once. A lost response or parse error can occur after a write succeeded. Preserve the attempt and inspect history before another send; do not put writes in automatic resend loops. The upstream CLI has no durable send ledger or server idempotency key.
 
@@ -556,7 +585,9 @@ Each `message` is a `TeamsRealtimeMessage`:
 | `conversationType` | `'chat' \| 'channel'` | `'channel'` for team-channel messages |
 | `teamId` | `string?` | Set for channel messages (use with `sendMessage`) |
 | `channelId` | `string?` | Set for channel messages (use with `sendMessage`) |
-| `content` | `string` | HTML-stripped text (unchanged) |
+| `content` | `string` | Plain text (paragraph breaks kept, entities decoded) |
+| `html` | `string?` | Original HTML, rich-text messages only |
+| `files` | `string[]?` | Downloadable URLs: inline images first, then attachments |
 | `mentions` | `TeamsMention[]` | Always present; empty when no `@mentions`. Each is `{ id, mri?, displayName }` |
 | `author` | `{ id, displayName }` | Sender (unchanged) |
 | `messageType` | `string` | e.g. `Text`, `RichText/Html` |

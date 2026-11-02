@@ -1,7 +1,7 @@
 ---
 name: agent-slack
 description: Interact with Slack workspaces - send messages, read channels, manage reactions
-version: 2.39.0
+version: 2.40.0
 allowed-tools: Bash(agent-slack:*)
 metadata:
   openclaw:
@@ -344,9 +344,16 @@ agent-slack reaction list <channel> <ts>
 ### File Commands
 
 ```bash
-# Upload file
-agent-slack file upload <channel> <path>
+# Upload file(s)
+agent-slack file upload <channel> <path...>
 agent-slack file upload general ./report.pdf
+
+# Upload into a thread with a comment (files grouped into one message)
+agent-slack file upload general ./shot.png --thread 1700000000.000100 --comment "triage notes"
+agent-slack file upload general ./a.png ./b.png --thread 1700000000.000100 --title "screenshots"
+
+# --filename overrides the name (single file only); output is an object for one file, an array for several
+agent-slack file upload general ./report.pdf --filename q3-report.pdf
 
 # List files
 agent-slack file list

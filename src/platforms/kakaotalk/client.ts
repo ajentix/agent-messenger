@@ -7,10 +7,12 @@ import { isOpenKakaoChatType } from './chat-classifier'
 import { detectImageDimensions } from './image-meta'
 import { sha1Hex } from './media-upload'
 import { LANG, PC_OS_NAME, getLocoDeviceConfig } from './protocol/config'
+import { exactInteger, parseJsonPreservingIntegers } from './protocol/exact-json'
 import { isSyntheticConnectionClose } from './protocol/login-response'
 import { uploadMediaToLoco, uploadMultiMediaEntry } from './protocol/media-uploader'
 import { LocoSession } from './protocol/session'
 import type { ChatListResponse, LocoPacket, LoginListResponse, SyncState } from './protocol/types'
+import { extractReadWatermarks } from './read-status'
 import { KakaoSyncStateStore } from './sync-state-store'
 import {
   KAKAO_MESSAGE_TYPE,
@@ -27,6 +29,7 @@ import {
   type KakaoMultiPhotoExtra,
   type KakaoProfile,
   type KakaoReadStateResult,
+  type KakaoReadWatermarks,
   type KakaoReplyExtra,
   type KakaoReplyTarget,
   type KakaoSendResult,
@@ -186,7 +189,7 @@ function longToString(v: unknown): string {
 function parseAttachmentJson(raw: unknown): Record<string, unknown> | null {
   if (typeof raw !== 'string' || raw.length === 0) return null
   try {
-    const parsed = JSON.parse(raw) as unknown
+    const parsed = parseJsonPreservingIntegers(raw)
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
     const attachment = parsed as Record<string, unknown>
     return Object.keys(attachment).length > 0 ? attachment : null
@@ -371,8 +374,31 @@ function isOpenChat(chat: ChatData): boolean {
   return isOpenKakaoChatType(chat.t)
 }
 
+// Packet decoding promotes safe int64 values to plain numbers, so `li` arrives as
+// a number for most rooms and as { low, high } only past 2^53. Zero means "no link".
 function getOpenLinkId(chat: ChatData): Long | null {
-  return bsonToLong(chat.li) ?? null
+  const li = chat.li
+  if (typeof li === 'number') return Number.isSafeInteger(li) && li > 0 ? Long.fromNumber(li) : null
+  const linkId = bsonToLong(li)
+  return linkId && !linkId.isZero() ? linkId : null
+}
+
+// Quoted replies in open chats need the room's link id. LOGINLIST may omit the room
+// (new device, partial snapshot), so fall back to read-only CHATINFO, which never
+// touches read state, instead of assuming the room is a regular chat.
+async function resolveReplyLinkId(
+  session: LocoSession,
+  loginResult: LoginListResponse,
+  chatId: string,
+): Promise<Long | null> {
+  const chat = (loginResult.chatDatas ?? []).find((entry) => longToString(entry.c) === chatId)
+  if (chat && (getOpenLinkId(chat) || !isOpenChat(chat))) return getOpenLinkId(chat)
+
+  const parsedChatId = parseLong(chatId)
+  const response = await session.getChannelInfo(parsedChatId)
+  assertLocoOk(response, 'CHATINFO')
+  const info = extractChannelInfo(response.body as Record<string, unknown>, longToString(parsedChatId))
+  return getOpenLinkId({ li: info.li })
 }
 
 function getLoginMaxLogId(loginResult: LoginListResponse, chatId: string): Long | null {
@@ -812,13 +838,20 @@ function buildMentions(text: string, userIds: string[], members: KakaoMember[]):
   return targets.map((target) => target.mention)
 }
 
-function buildReplyExtra(target: KakaoReplyTarget, mentions: KakaoMention[] = []): KakaoReplyExtra {
+// Official-client capture shape (no attach_only/attach_type/src_mentions, 100
+// character source preview). src_linkId is 0 in normal chats and the room's
+// exact link id in open chats, where the server rejects a zero link.
+function buildReplyExtra(
+  target: KakaoReplyTarget,
+  mentions: KakaoMention[] = [],
+  linkId?: Long | null,
+): KakaoReplyExtra {
   return {
     mentions,
     src_type: target.type,
-    src_logId: target.log_id,
-    src_linkId: 0,
-    src_userId: target.author_id,
+    src_logId: exactInteger(target.log_id).digits,
+    src_linkId: linkId ? linkId.toString() : 0,
+    src_userId: exactInteger(target.author_id).digits,
     src_message: Array.from(target.message).slice(0, 100).join(''),
   }
 }
@@ -1527,24 +1560,25 @@ export class KakaoTalkClient {
         throw wrapError(error, 'send_message_failed')
       }
     }
-    return this.executeWithReconnect(async ({ session }) => {
+    return this.executeWithReconnect(async ({ session, loginResult }) => {
       try {
         const response = options?.replyTo
           ? await session.sendReply(
               parseLong(chatId),
               text,
-              buildReplyExtra(options.replyTo, mentions) as unknown as Record<string, unknown>,
+              buildReplyExtra(options.replyTo, mentions, await resolveReplyLinkId(session, loginResult, chatId)),
             )
           : mentions.length
             ? await session.sendMessage(parseLong(chatId), text, mentions)
             : await session.sendMessage(parseLong(chatId), text)
+        const logId = longToString(response.body.logId)
 
         const status = writeStatus(response)
         return {
-          success: status === 0,
+          success: status === 0 && logId !== '0',
           status_code: status,
           chat_id: chatId,
-          log_id: longToString(response.body.logId),
+          log_id: logId,
           sent_at: response.body.sendAt as number,
         }
       } catch (error) {
@@ -2002,6 +2036,27 @@ export class KakaoTalkClient {
         }
       } catch (error) {
         throw wrapError(error, 'mark_read_failed')
+      }
+    })
+  }
+
+  /**
+   * Per-member read watermarks for a chat, from CHATONROOM. Note that CHATONROOM
+   * is the room-entry command: the server may clear the caller's own unread count
+   * for this chat (see #315), so do not call it from passive polling. The server
+   * returns watermarks only on the first CHATONROOM for a chat per LOCO session;
+   * a repeat call throws `get_read_watermarks_failed`. Seed once, then apply
+   * DECUNREAD `read` events (watermark only moves forward).
+   */
+  async getReadWatermarks(chatId: string): Promise<KakaoReadWatermarks> {
+    const parsedChatId = parseChatId(chatId)
+    return this.executeWithReconnect(async ({ session }) => {
+      try {
+        const response = await session.getChatInfo(parsedChatId)
+        assertLocoOk(response, 'CHATONROOM')
+        return extractReadWatermarks(response.body as Record<string, unknown>, longToString(parsedChatId))
+      } catch (error) {
+        throw wrapError(error, 'get_read_watermarks_failed')
       }
     })
   }

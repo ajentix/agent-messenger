@@ -15,11 +15,11 @@ import { TeamsClient, TeamsCredentialManager, TeamsError } from 'agent-messenger
 
 ## TeamsClient
 
-Work/school channel, directory and file methods use Microsoft Graph with the existing `TeamsTokenProvider`. Sign in with `agent-teams auth login` first; an extracted Skype token alone cannot access these methods. Private/group chats continue to use the Skype messaging service. Tenant policies and permissions can restrict individual operations.
+Work/school channel, directory and file methods use Microsoft Graph with the existing `TeamsTokenProvider`. Accounts without an `auth login` token (for example, set up with `auth extract`) fall back to the Teams CSA routes with the Skype token. Private/group chats continue to use the Skype messaging service. Tenant policies and permissions can restrict individual operations.
 
-The main client for interacting with Microsoft Teams' API programmatically. GET requests include rate-limit handling and backoff on server errors. Search uses a POST and is not automatically retried. Mutations are attempted once to avoid duplicate delivery after an ambiguous response.
+The main client for interacting with Microsoft Teams' API programmatically. Graph and Skype GET requests routed through the client request helpers include rate-limit handling and backoff on server errors; direct downloads are not retried. Search uses a POST and is not automatically retried. Mutations are attempted once to avoid duplicate delivery after an ambiguous response.
 
-Skype tokens are short-lived and their expiry is checked before Skype requests. `.login()` refreshes a stored device-code account; manually supplied SDK credentials remain a snapshot. For long-running SDK use, obtain fresh credentials at job boundaries. Graph/Substrate bearer tokens are minted and cached separately. If device-code refresh fails, reconnect explicitly with `auth login`; `auth extract` cannot repair Graph capabilities.
+Skype token expiry is checked before Skype requests only when `tokenExpiresAt` is supplied or `.login()` loads stored credentials. `.login()` refreshes a stored device-code account; manually supplied SDK credentials remain a snapshot. For long-running SDK use, obtain fresh credentials at job boundaries. Graph/Substrate bearer tokens are minted and cached separately. If device-code refresh fails, reconnect explicitly with `auth login`; `auth extract` cannot repair Graph capabilities.
 
 ```typescript
 import { TeamsClient } from 'agent-messenger/teams'
@@ -87,6 +87,10 @@ const limited = await client.getMessages(teamId, channelId, 25)
 const message = await client.getMessage(teamId, channelId, messageId)
 // → TeamsMessage
 
+// Get a single chat message by ID
+const chatMessage = await client.getChatMessage(chatId, messageId)
+// → TeamsMessage { id, channel_id, author, content, html?, files?, timestamp }
+
 // Delete a message
 await client.deleteMessage(teamId, channelId, messageId)
 ```
@@ -123,7 +127,12 @@ const file = await client.uploadFile(teamId, channelId, '/path/to/report.pdf')
 // List files in a channel
 const files = await client.listFiles(teamId, channelId)
 // → TeamsFile[]
+
+// Download any URL from a message's `files` (inline image or attachment)
+const { data, filename, contentType } = await client.downloadContent(message.files![0])
 ```
+
+Messages read from chats, channels, and the real-time listener expose `content` (plain text), `html` (the original HTML of rich-text messages), and `files` (every downloadable URL: inline images first, in order, then attachments). `downloadContent` sends the Skype token only to Teams/Skype hosts and downloads SharePoint/OneDrive attachments through Microsoft Graph, which requires an `auth login` account.
 
 ## TeamsCredentialManager
 
@@ -225,7 +234,9 @@ interface TeamsRealtimeMessage {
   conversationType: 'chat' | 'channel'
   teamId?: string // set for channel messages
   channelId?: string // set for channel messages
-  content: string // HTML-stripped text
+  content: string // plain text
+  html?: string // original HTML, rich-text messages only
+  files?: string[] // downloadable URLs: inline images first, then attachments
   mentions: TeamsMention[] // always present; empty when no @mentions
   author: { id: string; displayName: string }
   messageType: string
@@ -384,7 +395,7 @@ const page = await client.getChatMessagesPage(chatId, 50)
 const next = page.next_cursor ? await client.getChatMessagesPage(chatId, 50, page.next_cursor) : undefined
 ```
 
-`getChatMessages(chatId, limit)` follows pages automatically and includes media/system records. `getMessages` and `getThreadReplies` follow Graph pages up to the requested limit. Original server bodies remain in `raw`, even when text is rendered for agents. Search results are indexed previews, with their original result in `raw`.
+`getChatMessages(chatId, limit, { includeSystem })` follows pages automatically and includes media records; system records are included only with `includeSystem: true`. `getMessages` and `getThreadReplies` follow Graph pages up to the requested limit. Original server bodies remain in `raw`, even when text is rendered for agents. Search results are indexed previews, with their original result in `raw`.
 
 ### Reply targets and reaction permissions
 

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, mock, spyOn, it } from 'bun:test'
 
 import { TeamsClient } from '../client'
 import { TeamsCredentialManager } from '../credential-manager'
-import { editAction, historyAction, listAction, sendAction } from './chat'
+import { editAction, getAction, historyAction, listAction, sendAction } from './chat'
 
 let clientListChatsSpy: ReturnType<typeof spyOn>
 let clientGetChatMessagesSpy: ReturnType<typeof spyOn>
@@ -95,7 +95,7 @@ it('history: falls back to default limit when given a non-positive value', async
 
   await historyAction('19:1on1@unq.gbl.spaces', { limit: -5, pretty: false })
 
-  expect(clientGetChatMessagesSpy).toHaveBeenCalledWith('19:1on1@unq.gbl.spaces', 50)
+  expect(clientGetChatMessagesSpy).toHaveBeenCalledWith('19:1on1@unq.gbl.spaces', 50, { includeSystem: undefined })
 })
 
 it('send: returns sent message', async () => {
@@ -216,6 +216,58 @@ it('edit: rejects an invalid format', async () => {
   }
 })
 
+it('history: includes html and files for rich messages', async () => {
+  const consoleSpy = mock((_msg: string) => {})
+  console.log = consoleSpy
+  clientGetChatMessagesSpy.mockResolvedValue([
+    {
+      id: 'msg_123',
+      channel_id: '19:1on1@unq.gbl.spaces',
+      author: { id: 'user_789', displayName: 'Alice' },
+      content: 'See',
+      html: '<p>See</p>',
+      files: ['https://us-api.asm.skype.com/v1/objects/0-weu-d1-abc/views/imgo'],
+      timestamp: '2025-01-29T10:00:00Z',
+    },
+  ])
+
+  await historyAction('19:1on1@unq.gbl.spaces', { pretty: false })
+
+  const [message] = JSON.parse(consoleSpy.mock.calls[0][0])
+  expect(message.html).toBe('<p>See</p>')
+  expect(message.files).toEqual(['https://us-api.asm.skype.com/v1/objects/0-weu-d1-abc/views/imgo'])
+})
+
+it('get: returns a single chat message with html and files', async () => {
+  const consoleSpy = mock((_msg: string) => {})
+  console.log = consoleSpy
+  const getChatMessageSpy = spyOn(TeamsClient.prototype, 'getChatMessage').mockResolvedValue({
+    id: 'msg_123',
+    channel_id: '19:group@thread.v2',
+    author: { id: 'user_789', displayName: 'Alice' },
+    content: 'Hello',
+    html: '<p>Hello</p>',
+    files: ['https://contoso-my.sharepoint.com/personal/alice/Documents/report.pdf'],
+    timestamp: '2025-01-29T10:00:00Z',
+  })
+
+  try {
+    await getAction('19:group@thread.v2', 'msg_123', { pretty: false })
+
+    expect(getChatMessageSpy).toHaveBeenCalledWith('19:group@thread.v2', 'msg_123')
+    expect(JSON.parse(consoleSpy.mock.calls[0][0])).toEqual({
+      id: 'msg_123',
+      author: 'Alice',
+      content: 'Hello',
+      html: '<p>Hello</p>',
+      files: ['https://contoso-my.sharepoint.com/personal/alice/Documents/report.pdf'],
+      timestamp: '2025-01-29T10:00:00Z',
+    })
+  } finally {
+    getChatMessageSpy.mockRestore()
+  }
+})
+
 it('history: returns an explicit archive page and continuation cursor', async () => {
   const consoleLogSpy = mock((_msg: string) => {})
   console.log = consoleLogSpy
@@ -228,16 +280,18 @@ it('history: returns an explicit archive page and continuation cursor', async ()
         content: 'Line\nnext',
         timestamp: '2026-01-01',
         raw_content: 'Line<br>next',
+        raw: { id: 'm1', content: 'Line<br>next' },
       },
     ],
     next_cursor: 'https://example.test/cursor',
   })
   try {
     await historyAction('chat-1', { limit: 10, page: true, cursor: 'current' } as any)
-    expect(pageSpy).toHaveBeenCalledWith('chat-1', 10, 'current')
+    expect(pageSpy).toHaveBeenCalledWith('chat-1', 10, 'current', { includeSystem: undefined })
     const output = JSON.parse(consoleLogSpy.mock.calls[0][0])
     expect(output.next_cursor).toBe('https://example.test/cursor')
     expect(output.messages[0].raw_content).toBe('Line<br>next')
+    expect(output.messages[0].raw).toBeUndefined()
   } finally {
     pageSpy.mockRestore()
   }

@@ -25,6 +25,8 @@ export interface TeamsMessage {
     displayName: string
   }
   content: string
+  html?: string
+  files?: string[]
   timestamp: string
   root_message_id?: string
   parent_message_id?: string
@@ -196,6 +198,8 @@ export const TeamsMessageSchema = z.object({
     displayName: z.string(),
   }),
   content: z.string(),
+  html: z.string().optional(),
+  files: z.array(z.string()).optional(),
   timestamp: z.string(),
   root_message_id: z.string().optional(),
   parent_message_id: z.string().optional(),
@@ -321,6 +325,8 @@ export interface TeamsRealtimeMessage {
   teamId?: string
   channelId?: string
   content: string
+  html?: string
+  files?: string[]
   mentions: TeamsMention[]
   author: {
     id: string

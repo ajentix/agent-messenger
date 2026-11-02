@@ -5,6 +5,7 @@ import { serialize } from 'bson'
 
 import {
   buildModifyMessageBody,
+  buildReplyWriteBody,
   buildTypingActionBody,
   MODIFY_MESSAGE_METHOD,
   sendModifyMessagePacket,
@@ -197,5 +198,39 @@ describe('message edit wire contract', () => {
     expect(sent[0]!.method).toBe('MODIFYMSG')
     expect((sent[0]!.body.logId as { toString(): string }).toString()).toBe('42')
     expect(result).toBe(reply)
+  })
+})
+
+describe('reply WRITE wire contract', () => {
+  it('writes src_logId and src_userId as exact bare integers in the extra JSON', () => {
+    const body = buildReplyWriteBody(Long.fromString('459750513901477'), 'hi', {
+      mentions: [],
+      src_type: 1,
+      src_logId: '3947068532267313155',
+      src_linkId: 0,
+      src_userId: '7467363552057858123',
+      src_message: 'q',
+    })
+
+    expect(body.type).toBe(26)
+    expect(body.msg).toBe('hi')
+    expect(body).not.toHaveProperty('li')
+    expect(body.extra).toBe(
+      '{"mentions":[],"src_type":1,"src_logId":3947068532267313155,"src_linkId":0,"src_userId":7467363552057858123,"src_message":"q"}',
+    )
+  })
+
+  it('writes src_linkId as a bare integer when present', () => {
+    const body = buildReplyWriteBody(Long.fromString('1'), 'hi', {
+      mentions: [],
+      src_type: 1,
+      src_logId: '2',
+      src_linkId: '9007199254740993',
+      src_userId: '3',
+      src_message: '',
+    })
+
+    expect(body.extra).toContain('"src_linkId":9007199254740993')
+    expect(body).not.toHaveProperty('li')
   })
 })

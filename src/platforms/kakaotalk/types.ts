@@ -216,20 +216,23 @@ export interface KakaoSendMessageOptions {
 }
 
 // Official-client capture (2026-10-29): no attach_only/attach_type/src_mentions,
-// a 100-character source preview, and src_linkId: 0. Keep log IDs as strings
-// like existing reply extras so JSON.stringify does not lose 64-bit precision.
+// a 100-character source preview, and src_linkId: 0. IDs are decimal strings
+// here and written as bare 64-bit integer tokens by buildReplyWriteBody, so
+// they never pass through a JS number. Open chats carry the room's link id.
 export interface KakaoReplyExtra {
   src_logId: string
-  src_userId: number
+  src_userId: string
   src_message: string
   src_type: number
   mentions: KakaoMention[]
-  src_linkId: number
+  src_linkId: number | string
 }
 
+// author_id accepts every exact id shape the SDK surfaces: safe numbers (normal
+// chats), decimal strings, bigint, and BSON Long / { low, high } (open-chat authors).
 export interface KakaoReplyTarget {
   log_id: string
-  author_id: number
+  author_id: number | string | bigint | { low: number; high: number; unsigned?: boolean }
   message: string
   type: number
 }
@@ -267,6 +270,25 @@ export interface KakaoMarkReadResult {
   status_code: number
   chat_id: string
   watermark: string
+}
+
+export interface KakaoReadWatermark {
+  user_id: string
+  /** Highest log ID this member has read in the chat. */
+  watermark: string
+}
+
+export interface KakaoReadWatermarks {
+  chat_id: string
+  watermarks: KakaoReadWatermark[]
+}
+
+export interface KakaoReadStatus {
+  chat_id: string
+  log_id: string
+  unread_count: number
+  read_by: string[]
+  unread_by: string[]
 }
 
 export interface KakaoLeaveChatResult {
