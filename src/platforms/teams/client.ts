@@ -12,6 +12,14 @@ import {
   prependQuoteTag,
   referenceAttachments,
 } from './attachments'
+import {
+  MAX_CHAT_IMAGES,
+  chatImageTag,
+  chatMediaHostIn,
+  isChatMediaHost,
+  readChatImageSize,
+  type ChatImage,
+} from './chat-images'
 import { TeamsCredentialManager } from './credential-manager'
 import { TeamsGraph, graphMessage, graphTeam, graphChannel, graphUser, graphFile, segment } from './graph'
 import { sanitizeTeamsHtml } from './html-sanitizer'
@@ -341,6 +349,23 @@ const STORED_IMAGE_SRC = /\bsrc="https:\/\/[a-z0-9-]+\.asyncgw\.teams\.microsoft
 
 export function storedChatImages(html: string): string[] {
   return (html.match(STORED_IMAGE_TAG) ?? []).filter((tag) => STORED_IMAGE_SRC.test(tag))
+}
+
+const STORED_IMAGE_ID = /\/v1\/objects\/([^/"\s]+)\//
+
+function storedImageIds(html: string): Set<string> {
+  const ids = new Set<string>()
+  for (const tag of storedChatImages(html)) {
+    const id = tag.match(STORED_IMAGE_ID)?.[1]
+    if (id) ids.add(id)
+  }
+  return ids
+}
+
+// Gateway polling interval while an uploaded image is being stored; tests shorten it.
+export let CHAT_IMAGE_POLL_MS = 500
+export function setChatImagePollMs(ms: number): void {
+  CHAT_IMAGE_POLL_MS = ms
 }
 
 interface RawChatMessage {
@@ -950,36 +975,86 @@ export class TeamsClient {
   async editChatMessage(
     chatId: string,
     messageId: string,
-    content: string,
+    content: string | undefined,
     format: TeamsMessageFormat = 'text',
-    options: { keepImages?: boolean } = {},
-  ): Promise<TeamsMessage & { images_kept?: number }> {
+    options: { keepImages?: boolean; images?: ChatImage[]; mediaHost?: string } = {},
+  ): Promise<TeamsMessage & { images_kept?: number; images_added?: number }> {
     interface EditResponse {
       edittime?: string | number
     }
+    const added = options.images ?? []
+    const keepBody = content === undefined
+    // Adding images to the current text must not drop the images it already shows.
+    const keepImages = options.keepImages ?? keepBody
+    if (keepBody && added.length === 0)
+      throw new TeamsError('Give new content or at least one image to add.', 'edit_nothing_to_change')
+    if (added.length > MAX_CHAT_IMAGES)
+      throw new TeamsError(`A message can carry at most ${MAX_CHAT_IMAGES} images.`, 'image_count_exceeded')
+    // Check every image before anything is uploaded, so a bad file leaves the message untouched.
+    const sizes = added.map((image) => readChatImageSize(image.data, image.filename))
+
     // An edit replaces the whole body, so images survive only if their stored tags are sent again.
     let images: string[] = []
-    if (options.keepImages) {
-      const current = await this.locateChatMessage(chatId, messageId)
+    let current: TeamsMessage | undefined
+    let mediaHost = options.mediaHost?.replace(/\/+$/, '').toLowerCase()
+    if (mediaHost !== undefined && !isChatMediaHost(mediaHost))
+      throw new TeamsError(`Not a Teams media gateway host: ${options.mediaHost}`, 'image_host_invalid')
+    if (keepImages || keepBody || added.length > 0) {
+      const scan = await this.scanChatForMessage(chatId, messageId, 5, added.length > 0 && mediaHost === undefined)
+      current = scan.message
       if (!current)
         throw new TeamsError(
-          'Message to edit was not found in the last 5 pages, so its images cannot be kept. Use --drop-images to edit without them.',
+          keepBody
+            ? 'Message to edit was not found in the last 5 pages, so its text cannot be kept.'
+            : 'Message to edit was not found in the last 5 pages, so its images cannot be kept. Use --drop-images to edit without them.',
           'edit_target_not_found',
         )
-      images = storedChatImages(current.raw_content ?? '')
+      if (keepImages) images = storedChatImages(current.raw_content ?? '')
+      mediaHost ??= scan.mediaHost
     }
+    if (added.length > 0 && !mediaHost)
+      throw new TeamsError(
+        'No Teams image is stored in this chat yet, so its media gateway is unknown. Pass the gateway host explicitly.',
+        'image_host_unknown',
+      )
+
+    const addedTags: string[] = []
+    const addedIds: string[] = []
+    for (const [index, image] of added.entries()) {
+      const objectId = await this.uploadChatImage(mediaHost!, chatId, image)
+      addedIds.push(objectId)
+      addedTags.push(chatImageTag(mediaHost!, objectId, sizes[index]))
+    }
+
+    let baseBody: string
+    if (content === undefined) {
+      const stored = current?.raw_content ?? ''
+      baseBody = keepImages ? stored : stored.replace(STORED_IMAGE_TAG, '')
+    } else {
+      baseBody = formatContent(content, format) + images.join('')
+    }
+    const keptIds = storedImageIds(baseBody)
+    const body = baseBody + addedTags.join('')
+
+    const payload: Record<string, unknown> = {
+      content: body,
+      messagetype: 'RichText/Html',
+      contenttype: 'text',
+    }
+    if (added.length > 0) payload.amsreferences = [...new Set([...keptIds, ...addedIds])]
+    // Keeping the text keeps its mentions; Teams renders them only with the stored mention list.
+    const storedMentions = (current?.raw as RawChatMessage | undefined)?.properties?.mentions
+    if (keepBody && typeof storedMentions === 'string' && storedMentions !== '[]')
+      payload.properties = { mentions: storedMentions }
+    // Skype messaging backend requires skypeeditedid to duplicate the URL message id.
+    payload.skypeeditedid = messageId
+
     const encodedChatId = encodeURIComponent(chatId)
     const encodedMessageId = encodeURIComponent(messageId)
-    // Skype messaging backend requires skypeeditedid to duplicate the URL message id.
     const response = await this.request<EditResponse>(
       'PUT',
       `/users/ME/conversations/${encodedChatId}/messages/${encodedMessageId}`,
-      {
-        content: formatContent(content, format) + images.join(''),
-        messagetype: 'RichText/Html',
-        contenttype: 'text',
-        skypeeditedid: messageId,
-      },
+      payload,
     )
 
     const editTime = response?.edittime
@@ -987,10 +1062,45 @@ export class TeamsClient {
       id: messageId,
       channel_id: chatId,
       author: { id: 'ME', displayName: 'Me' },
-      content,
+      content: content ?? current?.content ?? '',
       timestamp: editTime ? new Date(Number(editTime) || editTime).toISOString() : new Date().toISOString(),
-      ...(options.keepImages ? { images_kept: images.length } : {}),
+      ...(keepImages ? { images_kept: storedChatImages(baseBody).length } : {}),
+      ...(added.length > 0 ? { images_added: added.length } : {}),
     }
+  }
+
+  // Uploads one image the way the Teams app does: create a read-shared object for the chat,
+  // put the bytes, then wait until the gateway reports the content as stored.
+  private async uploadChatImage(host: string, chatId: string, image: ChatImage): Promise<string> {
+    const auth = { Authorization: `skype_token ${this.getToken()}` }
+    const created = await fetch(`${host}/v1/objects/`, {
+      method: 'POST',
+      headers: { ...auth, 'Content-Type': 'application/json', 'X-Client-Version': '0/0.0.0.0' },
+      body: JSON.stringify({ type: 'pish/image', permissions: { [chatId]: ['read'] }, filename: image.filename }),
+      // The token and bytes may only go to the gateway host that was checked, never to a redirect target.
+      redirect: 'error',
+    })
+    const createdBody = (await created.json().catch(() => ({}))) as { id?: unknown }
+    if (!created.ok || typeof createdBody.id !== 'string' || !createdBody.id)
+      throw new TeamsError(`Image upload could not start (HTTP ${created.status}).`, 'image_upload_failed')
+    const objectId = createdBody.id
+    const objectUrl = `${host}/v1/objects/${encodeURIComponent(objectId)}`
+    const put = await fetch(`${objectUrl}/content/imgpsh`, {
+      method: 'PUT',
+      headers: { ...auth, 'Content-Type': 'application/octet-stream' },
+      body: image.data,
+      redirect: 'error',
+    })
+    if (!put.ok) throw new TeamsError(`Image upload failed (HTTP ${put.status}).`, 'image_upload_failed')
+    for (let attempt = 0; attempt < 20; attempt++) {
+      const status = await fetch(`${objectUrl}/views/imgo/status`, { headers: auth, redirect: 'error' })
+      if (status.ok) {
+        const state = (await status.json().catch(() => ({}))) as { content_state?: string }
+        if (state.content_state === 'ready') return objectId
+      }
+      await new Promise((resolve) => setTimeout(resolve, CHAT_IMAGE_POLL_MS))
+    }
+    throw new TeamsError('Uploaded image was not ready in time; the message was not changed.', 'image_upload_timeout')
   }
 
   // Graph needs the AAD refresh token saved by `auth login` for this client's own identity;
@@ -1005,14 +1115,27 @@ export class TeamsClient {
   }
 
   private async locateChatMessage(chatId: string, messageId: string, maxPages = 5): Promise<TeamsMessage | undefined> {
+    return (await this.scanChatForMessage(chatId, messageId, maxPages)).message
+  }
+
+  // Finds the message and, from the images already in the chat, the media gateway it uses.
+  private async scanChatForMessage(
+    chatId: string,
+    messageId: string,
+    maxPages = 5,
+    needMediaHost = false,
+  ): Promise<{ message?: TeamsMessage; mediaHost?: string }> {
     let cursor: string | undefined
+    let message: TeamsMessage | undefined
+    let mediaHost: string | undefined
     for (let page = 0; page < maxPages; page++) {
       const result = await this.getChatMessagesPage(chatId, 100, cursor)
-      const found = result.messages.find((message) => message.id === messageId)
-      if (found || !result.next_cursor) return found
+      message ??= result.messages.find((candidate) => candidate.id === messageId)
+      for (const candidate of result.messages) mediaHost ??= chatMediaHostIn(candidate.raw_content ?? '')
+      if ((message && (mediaHost || !needMediaHost)) || !result.next_cursor) break
       cursor = result.next_cursor
     }
-    return undefined
+    return { message, mediaHost }
   }
 
   private graph(): TeamsGraph {

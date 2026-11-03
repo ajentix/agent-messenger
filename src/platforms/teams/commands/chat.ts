@@ -1,3 +1,6 @@
+import { readFile } from 'node:fs/promises'
+import { basename } from 'node:path'
+
 import { Command } from 'commander'
 
 import { handleError } from '@/shared/utils/error-handler'
@@ -163,8 +166,8 @@ export async function sendAction(
 export async function editAction(
   chatId: string,
   messageId: string,
-  content: string,
-  options: { pretty?: boolean; format?: string; dropImages?: boolean },
+  content: string | undefined,
+  options: { pretty?: boolean; format?: string; dropImages?: boolean; images?: string[]; mediaHost?: string },
 ): Promise<void> {
   const format = resolveFormat(options.format, options.pretty)
 
@@ -183,9 +186,15 @@ export async function editAction(
       accountType: cred.accountType,
       region: cred.region,
     })
+    const images = await Promise.all(
+      (options.images ?? []).map(async (path) => ({ data: await readFile(path), filename: basename(path) })),
+    )
     // Like the Teams app, an edit keeps the images already in the message unless asked not to.
+    // Without new content it keeps the text and mentions too, so images can be added on their own.
     const message = await client.editChatMessage(chatId, messageId, content, format, {
       keepImages: !options.dropImages,
+      ...(images.length > 0 ? { images } : {}),
+      ...(options.mediaHost ? { mediaHost: options.mediaHost } : {}),
     })
 
     const output = {
@@ -258,9 +267,16 @@ export const chatCommand = new Command('chat')
       .description('Edit a message in a chat (your own messages only)')
       .argument('<chat-id>', 'Chat ID')
       .argument('<message-id>', 'Message ID')
-      .argument('<content>', 'New message content')
+      .argument('[content]', 'New message content (omit to keep the current text and mentions)')
       .option('--format <format>', 'Message format: text, markdown, or html', 'text')
       .option('--drop-images', 'Remove the images already in the message instead of keeping them')
+      .option(
+        '--image <path>',
+        'Add a PNG, JPEG or GIF image below the message (repeatable)',
+        (value: string, previous: string[]) => [...previous, value],
+        [],
+      )
+      .option('--media-host <url>', 'Teams media gateway for new images, when the chat has none stored yet')
       .option('--pretty', 'Pretty print JSON output')
       .action(editAction),
   )

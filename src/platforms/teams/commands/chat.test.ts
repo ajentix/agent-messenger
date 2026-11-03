@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, expect, mock, spyOn, it } from 'bun:test'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 import { TeamsClient } from '../client'
 import { TeamsCredentialManager } from '../credential-manager'
@@ -133,6 +136,25 @@ it('edit: drops the existing images only when --drop-images is given', async () 
   expect(clientEditChatMessageSpy).toHaveBeenCalledWith('19:1on1@unq.gbl.spaces', 'msg_123', 'Text only', 'text', {
     keepImages: false,
   })
+})
+
+it('edit: adds images and keeps the current text when content is omitted', async () => {
+  const consoleSpy = mock((_msg: string) => {})
+  console.log = consoleSpy
+  const dir = mkdtempSync(join(tmpdir(), 'teams-edit-image-'))
+  const imagePath = join(dir, 'capture.png')
+  writeFileSync(imagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+
+  try {
+    await editAction('19:group@thread.v2', 'msg_123', undefined, { pretty: false, images: [imagePath] })
+
+    expect(clientEditChatMessageSpy).toHaveBeenCalledWith('19:group@thread.v2', 'msg_123', undefined, 'text', {
+      keepImages: true,
+      images: [{ data: Buffer.from([0x89, 0x50, 0x4e, 0x47]), filename: 'capture.png' }],
+    })
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 it('send: passes markdown format to the client', async () => {
