@@ -14,10 +14,18 @@ const mockGetChats = mock(() =>
 )
 
 const mockLeaveChat = mock(() => Promise.resolve({ success: true, status_code: 0, chat_id: 'chat-1' }))
+const mockOpenDirectChat = mock(async () => ({
+  success: true,
+  status_code: 0,
+  chat_id: '100',
+  user_id: '2',
+  existing: true,
+}))
 
 const mockClient = {
   getChats: mockGetChats,
   leaveChat: mockLeaveChat,
+  openDirectChat: mockOpenDirectChat,
 }
 
 mock.module('./shared', () => ({
@@ -114,5 +122,15 @@ describe('chat commands', () => {
         expect.any(Function),
       )
     })
+  })
+
+  it('opens a direct chat with the selected account and prints chat_id JSON', async () => {
+    await chatCommand.parseAsync(['open', '2', '--account', 'fixture'], { from: 'user' })
+    expect(mockOpenDirectChat).toHaveBeenCalledWith('2')
+    expect(mockWithKakaoClient).toHaveBeenLastCalledWith(
+      expect.objectContaining({ account: 'fixture' }),
+      expect.any(Function),
+    )
+    expect(JSON.parse(consoleLogSpy.mock.calls[0][0]).chat_id).toBe('100')
   })
 })

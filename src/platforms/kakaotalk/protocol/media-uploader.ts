@@ -3,6 +3,7 @@ import { Long } from 'bson'
 import type { KakaoDeviceType } from '../types'
 import { MCCMNC, getLocoDeviceConfig } from './config'
 import { LocoConnection } from './connection'
+import { isSyntheticConnectionClose } from './login-response'
 import type { LocoPacket } from './types'
 
 export interface UploadToLocoOptions {
@@ -29,6 +30,15 @@ export interface UploadToLocoResult {
 const DEFAULT_NETWORK_TYPE = 0
 const DEFAULT_COMPLETE_TIMEOUT_MS = 60_000
 
+export interface MediaUploadConnection {
+  connectSecure(host: string, port: number): Promise<void>
+  onPush(handler: (packet: LocoPacket) => void): void
+  onClose(handler: () => void): void
+  sendPacket(method: string, body: Record<string, unknown>): Promise<LocoPacket>
+  writeRaw(data: Buffer): Promise<void>
+  close(): void
+}
+
 // Drives the SHIP → connect → POST → stream → COMPLETE pipeline that KakaoTalk
 // uses for chat-media uploads. The caller has already done SHIP on the main
 // session and received {k, vh, p}; this opens a dedicated TCP+LOCO connection
@@ -39,8 +49,11 @@ const DEFAULT_COMPLETE_TIMEOUT_MS = 60_000
 // Field names (u/k/t/s/c/mid/w/h/mm/nt/os/av/f/ns) match the APK's
 // `SR/g0.java` (PostJob) verbatim. The COMPLETE handshake is a server-pushed
 // packet whose body contains the resulting chatLog struct.
-export async function uploadMediaToLoco(opts: UploadToLocoOptions): Promise<UploadToLocoResult> {
-  return runPostStreamComplete(opts, 'POST')
+export async function uploadMediaToLoco(
+  opts: UploadToLocoOptions,
+  connectionFactory: () => MediaUploadConnection = () => new LocoConnection(),
+): Promise<UploadToLocoResult> {
+  return runPostStreamComplete(opts, 'POST', connectionFactory)
 }
 
 // Single-entry MPOST upload — runs the same connect → POST → stream → COMPLETE
@@ -48,14 +61,17 @@ export async function uploadMediaToLoco(opts: UploadToLocoOptions): Promise<Uplo
 // for each entry in a multi-photo batch). Callers fan-out across all entries
 // in parallel and then issue one FORWARD to register the gallery message.
 export async function uploadMultiMediaEntry(opts: UploadToLocoOptions): Promise<UploadToLocoResult> {
-  return runPostStreamComplete(opts, 'MPOST')
+  return runPostStreamComplete(opts, 'MPOST', () => new LocoConnection())
 }
 
-async function runPostStreamComplete(opts: UploadToLocoOptions, opcode: 'POST' | 'MPOST'): Promise<UploadToLocoResult> {
+async function runPostStreamComplete(
+  opts: UploadToLocoOptions,
+  opcode: 'POST' | 'MPOST',
+  connectionFactory: () => MediaUploadConnection,
+): Promise<UploadToLocoResult> {
   const device = getLocoDeviceConfig(opts.deviceType)
 
-  const conn = new LocoConnection()
-  await conn.connectSecure(opts.shipHost, opts.shipPort)
+  const conn = connectionFactory()
 
   const totalSize = opts.data.byteLength
   let completeResolve: ((p: LocoPacket | null) => void) | null = null
@@ -77,8 +93,10 @@ async function runPostStreamComplete(opts: UploadToLocoOptions, opcode: 'POST' |
       completeResolve = null
     }
   })
+  conn.onClose(() => completeResolve?.(null))
 
   try {
+    await conn.connectSecure(opts.shipHost, opts.shipPort)
     const postBody: Record<string, unknown> = {
       k: opts.shipToken,
       s: totalSize,
@@ -102,8 +120,18 @@ async function runPostStreamComplete(opts: UploadToLocoOptions, opcode: 'POST' |
     }
 
     const postResp = await conn.sendPacket(opcode, postBody)
+    if (isSyntheticConnectionClose(postResp)) throw new Error(`${opcode} connection closed; delivery is unknown`)
+    if (!Number.isSafeInteger(postResp.statusCode)) throw new Error(`Invalid ${opcode} status`)
+    const postBodyStatus = postResp.body.status
+    const postStatusCode =
+      postResp.statusCode !== 0 ? postResp.statusCode : typeof postBodyStatus === 'number' ? postBodyStatus : 0
+    // A refusal (including provider size limits) must not stream any bytes or
+    // wait for COMPLETE. Preserve the provider status for the caller.
+    if (postStatusCode !== 0) return { completePacket: null, postStatusCode, postOffset: 0 }
     const postOffsetRaw = (postResp.body as Record<string, unknown>).o
     const postOffset = typeof postOffsetRaw === 'number' ? postOffsetRaw : 0
+    if (!Number.isSafeInteger(postOffset) || postOffset < 0 || postOffset > totalSize)
+      throw new Error('Invalid POST offset')
 
     const bytesToSend = opts.data.subarray(postOffset)
     if (bytesToSend.length > 0) {
@@ -112,7 +140,6 @@ async function runPostStreamComplete(opts: UploadToLocoOptions, opcode: 'POST' |
     }
 
     const completePacket = await completePromise
-    const postStatusCode = postResp.statusCode
 
     return {
       completePacket,

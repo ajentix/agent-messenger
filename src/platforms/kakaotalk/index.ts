@@ -12,10 +12,15 @@ export { KakaoTalkListener } from './listener'
 export type { PendingLoginState } from './credential-manager'
 export type {
   KakaoAccountCredentials,
+  KakaoAttachmentBatchItem,
+  KakaoAttachmentBatchResult,
   KakaoAuthErrorCode,
   KakaoAuthMethod,
   KakaoChat,
   KakaoChatType,
+  KakaoDirectChatResult,
+  KakaoFriend,
+  KakaoFriendAddResult,
   KakaoOpenChatType,
   KakaoConfig,
   KakaoDeviceType,
@@ -58,8 +63,12 @@ export {
   KAKAO_EMOTICON_MESSAGE_TYPES,
   KAKAO_MESSAGE_TYPE,
   KakaoAccountCredentialsSchema,
+  KakaoAttachmentBatchResultSchema,
   KakaoChatSchema,
   KakaoConfigSchema,
+  KakaoDirectChatResultSchema,
+  KakaoFriendSchema,
+  KakaoFriendAddResultSchema,
   KakaoEditResultSchema,
   KakaoLeaveChatResultSchema,
   KakaoMarkReadResultSchema,
@@ -88,6 +97,7 @@ export type {
   KakaoOAuthRefreshResult,
 } from './auth/oauth-refresh'
 export { sha1Hex } from './media-upload'
+export type { AddFriendByPhoneInput } from './friends'
 export { detectImageDimensions } from './image-meta'
 export type { AttachmentInput, AttachmentPlan, ResolvedAttachment, SingleAttachmentKind } from './attachment-router'
 export { planAttachments, resolveAttachment } from './attachment-router'

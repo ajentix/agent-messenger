@@ -1,0 +1,46 @@
+{
+  "repository": "https://github.com/storycraft/node-kakao",
+  "commit": "8512e4699e2cd4c26516b80d38b57b2f85a6cc8a",
+  "files": {
+    "src/channel/channel-type.ts": {
+      "snapshot": "src/channel/channel-type.ts.txt",
+      "sha256": "6ba279c893b2e795e9f2299bc7f634dabdd4facaa75a3748d41438cea5aba3de"
+    },
+    "src/api/service-api-client.ts": {
+      "snapshot": "src/api/service-api-client.ts.txt",
+      "sha256": "b0fb97493c3d65263cf46ab3887737e57438f74a5e5e1de6f474a41a5a98322f"
+    },
+    "src/api/header-util.ts": {
+      "snapshot": "src/api/header-util.ts.txt",
+      "sha256": "eecaa32828e7e7e8ecff56938a4c2e1ba79cdfa3cfd34ce27e9eef7a48a5324c"
+    },
+    "src/api/web-api-util.ts": {
+      "snapshot": "src/api/web-api-util.ts.txt",
+      "sha256": "39c3c98de8ac925d8c8298763b477f10457cd0129c27add07c9ee945207b693c"
+    },
+    "src/request/index.ts": {
+      "snapshot": "src/request/index.ts.txt",
+      "sha256": "223a252850e46742d50ddc52fca67ef4e05621bd5daea46dc7dd3ed8564ac4dc"
+    },
+    "src/talk/channel/talk-channel-session.ts": {
+      "snapshot": "src/talk/channel/talk-channel-session.ts.txt",
+      "sha256": "0e21f9b20e095a98703982ea6d1d6db89b156ff5c013e4ae60cec8069ecdf86b"
+    },
+    "src/packet/chat/create.ts": {
+      "snapshot": "src/packet/chat/create.ts.txt",
+      "sha256": "e4cecba77f4bfdba0425d0d7609949de361e4cc68555fe4f8e72914bb0814919"
+    },
+    "src/api/struct/friends/friend-struct.ts": {
+      "snapshot": "src/api/struct/friends/friend-struct.ts.txt",
+      "sha256": "aad9ab35c4c01beac6f0106a813ad7d34b32a317df41962e69413b103797244b"
+    },
+    "src/api/struct/friends/friend-list-struct.ts": {
+      "snapshot": "src/api/struct/friends/friend-list-struct.ts.txt",
+      "sha256": "359c109ca6763aa5c78ae6c24d0a9ea0ce5034683fcdbb795459753e4ccfde6d"
+    },
+    "src/api/struct/friends/friend-req-struct.ts": {
+      "snapshot": "src/api/struct/friends/friend-req-struct.ts.txt",
+      "sha256": "784faf91202616538404171f934dac2b4c525a53199130eb339409a212be709c"
+    }
+  }
+}

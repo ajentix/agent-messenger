@@ -3,7 +3,9 @@
 This KakaoTalk protocol and Android authentication implementation was written
 from scratch for agent-messenger. The protocol knowledge used to build it comes
 from the following open-source projects and their documentation. No code was
-copied from these projects.
+copied into the runtime from these projects. Unmodified, attributed reference
+snapshots for the phone-contact and CREATE work are retained separately under
+`research/kakaotalk/node-kakao/`.
 
 ---
 
@@ -40,6 +42,15 @@ Android sub-device login flow, and connection patterns.
 Referenced for: LOCO packet format, BSON command schemas, authentication flow,
 Android OAuth refresh request/response behavior, X-VC signature algorithm,
 channel/chat type enumerations.
+
+Phone contacts, friend listing and normal chat creation additionally reference
+commit `8512e4699e2cd4c26516b80d38b57b2f85a6cc8a`:
+`src/api/service-api-client.ts`, `src/api/header-util.ts`, the friend structs,
+and `src/talk/channel/talk-channel-session.ts` (CREATE with memberIds).
+Unmodified source snapshots, SHA-256 hashes and the MIT license are retained
+under `research/kakaotalk/node-kakao/`. They are reference material, not runtime
+dependencies. The phone-add response only promises `pstn_number`; this SDK
+resolves the user ID from the friend list by exact normalized phone number.
 
 ---
 

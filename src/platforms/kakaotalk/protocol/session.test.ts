@@ -5,6 +5,8 @@ import { serialize } from 'bson'
 
 import {
   buildModifyMessageBody,
+  buildCreateChatBody,
+  CREATE_CHAT_METHOD,
   buildReplyWriteBody,
   buildTypingActionBody,
   MODIFY_MESSAGE_METHOD,
@@ -16,6 +18,15 @@ import {
 import type { LocoPacket } from './types'
 
 type SentPacket = { method: string; body: Record<string, unknown> }
+
+describe('CREATE wire contract', () => {
+  it('matches node-kakao memberIds and preserves full-width BSON IDs', () => {
+    expect(CREATE_CHAT_METHOD).toBe('CREATE')
+    const body = buildCreateChatBody([Long.fromString('9007199254740993')])
+    expect(serialize(body)).toEqual(serialize({ memberIds: [Long.fromString('9007199254740993')] }))
+    expect(buildCreateChatBody([Long.ONE], 'name')).toEqual({ memberIds: [Long.ONE], nickName: 'name' })
+  })
+})
 
 describe('message WRITE wire contract', () => {
   it('keeps plain text WRITE byte-for-byte identical without extra', async () => {

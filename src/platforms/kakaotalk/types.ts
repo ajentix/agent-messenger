@@ -145,6 +145,94 @@ export interface KakaoSendResult {
   sent_at: number
 }
 
+export interface KakaoFriend {
+  user_id: string
+  nickname: string
+  phone_number: string | null
+  direct_chat_id: string | null
+}
+
+export interface KakaoFriendAddResult {
+  success: boolean
+  status_code: number
+  user_id: string
+  nickname: string
+  phone_number: string
+}
+
+export interface KakaoDirectChatResult {
+  success: boolean
+  status_code: number
+  chat_id: string
+  user_id: string
+  existing: boolean
+}
+
+export interface KakaoAttachmentBatchItem {
+  index: number
+  filename: string
+  size: number
+  success: boolean
+  status: 'sent' | 'failed' | 'unknown' | 'skipped'
+  status_code: number | null
+  chat_id: string
+  log_id: string | null
+  sent_at: number | null
+  error: { code: string; message: string } | null
+}
+
+export interface KakaoAttachmentBatchResult {
+  success: boolean
+  status_code: number
+  chat_id: string
+  files: KakaoAttachmentBatchItem[]
+  completed_count: number
+}
+
+export const KakaoFriendSchema = z.object({
+  user_id: z.string(),
+  nickname: z.string(),
+  phone_number: z.string().nullable(),
+  direct_chat_id: z.string().nullable(),
+})
+
+export const KakaoFriendAddResultSchema = z.object({
+  success: z.boolean(),
+  status_code: z.number(),
+  user_id: z.string(),
+  nickname: z.string(),
+  phone_number: z.string(),
+})
+
+export const KakaoDirectChatResultSchema = z.object({
+  success: z.boolean(),
+  status_code: z.number(),
+  chat_id: z.string(),
+  user_id: z.string(),
+  existing: z.boolean(),
+})
+
+export const KakaoAttachmentBatchResultSchema = z.object({
+  success: z.boolean(),
+  status_code: z.number(),
+  chat_id: z.string(),
+  files: z.array(
+    z.object({
+      index: z.number().int().nonnegative(),
+      filename: z.string(),
+      size: z.number().int().nonnegative(),
+      success: z.boolean(),
+      status: z.enum(['sent', 'failed', 'unknown', 'skipped']),
+      status_code: z.number().nullable(),
+      chat_id: z.string(),
+      log_id: z.string().nullable(),
+      sent_at: z.number().nullable(),
+      error: z.object({ code: z.string(), message: z.string() }).nullable(),
+    }),
+  ),
+  completed_count: z.number().int().nonnegative(),
+})
+
 // LOCO message_type values. Source: KakaoTalk APK 26.4.2 + typeclaw inbound parser.
 export const KAKAO_MESSAGE_TYPE = {
   TEXT: 1,

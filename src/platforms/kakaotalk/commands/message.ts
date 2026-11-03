@@ -1,12 +1,13 @@
 import { readFileSync } from 'node:fs'
 import { basename, resolve } from 'node:path'
 
-import { Command } from 'commander'
+import { Command, Option } from 'commander'
 
 import { handleError } from '@/shared/utils/error-handler'
 import { assertReadableMessageLayout } from '@/shared/utils/message-layout'
 import { formatOutput } from '@/shared/utils/output'
 
+import { guessMimeFromFilename } from '../media-upload'
 import type { KakaoMessage, KakaoReplyTarget } from '../types'
 import { withKakaoClient } from './shared'
 
@@ -115,28 +116,42 @@ type UploadKind = 'auto' | 'photo' | 'video' | 'audio' | 'file' | 'multi'
 async function uploadAction(
   chatId: string,
   filePaths: string[],
-  options: { account?: string; pretty?: boolean; as?: UploadKind; mime?: string },
+  options: { account?: string; pretty?: boolean; as?: UploadKind; mime?: string; maxFileBytes?: string },
 ): Promise<void> {
   try {
-    const kind: UploadKind = options.as ?? (filePaths.length > 1 ? 'multi' : 'auto')
+    const inputs = filePaths.map((p) => ({ data: readFileSync(resolve(p)), filename: basename(p), mime: options.mime }))
+    const maxFileBytes = options.maxFileBytes === undefined ? undefined : Number(options.maxFileBytes)
+    if (maxFileBytes !== undefined && (!Number.isSafeInteger(maxFileBytes) || maxFileBytes <= 0))
+      throw new Error('--max-file-bytes must be a positive integer')
+    for (const input of inputs) {
+      if (input.data.byteLength === 0) throw new Error(`File ${input.filename} is empty`)
+      if (maxFileBytes !== undefined && input.data.byteLength > maxFileBytes)
+        throw new Error(
+          `File ${input.filename} has ${input.data.byteLength} bytes, exceeding the caller limit of ${maxFileBytes} bytes`,
+        )
+    }
+    const allPhotos = inputs.every((file) =>
+      (file.mime ?? guessMimeFromFilename(file.filename)).toLowerCase().startsWith('image/'),
+    )
+    const requestedKind = options.as ?? 'auto'
+    const kind: UploadKind = requestedKind === 'auto' && inputs.length > 1 && allPhotos ? 'multi' : requestedKind
+    if (kind === 'multi' && (inputs.length < 2 || !allPhotos))
+      throw new Error('--as=multi requires 2 or more image files; use --as=file for multiple documents')
+    if (inputs.length > 1 && !['auto', 'file', 'multi'].includes(kind))
+      throw new Error(`--as=${kind} accepts exactly one file path`)
 
     const result = await withKakaoClient(options, async (client) => {
+      if (inputs.length > 1 && (kind === 'file' || kind === 'auto')) {
+        return client.sendFiles(chatId, inputs, { maxFileBytes })
+      }
       if (kind === 'multi') {
-        if (filePaths.length < 2) {
-          throw new Error('--as=multi requires 2 or more files')
-        }
-        return client.sendMultiPhoto(
-          chatId,
-          filePaths.map((p) => ({ data: readFileSync(resolve(p)), filename: basename(p) })),
-        )
+        return client.sendMultiPhoto(chatId, inputs)
       }
 
       if (filePaths.length !== 1) {
         throw new Error(`--as=${kind} accepts exactly one file path`)
       }
-      const path = resolve(filePaths[0]!)
-      const data = readFileSync(path)
-      const filename = basename(path)
+      const { data, filename } = inputs[0]!
 
       switch (kind) {
         case 'auto':
@@ -232,13 +247,23 @@ export const messageCommand = new Command('message')
   .addCommand(
     new Command('upload')
       .description(
-        'Send one or more files to a chat. MIME is sniffed from the filename (or --mime) and dispatched to the matching KakaoTalk message_type. Pass 2+ files (or --as=multi) for a multi-photo gallery.',
+        'Send attachments. Multiple images use a gallery; multiple documents or --as=file use sequential files with one result per file.',
       )
       .argument('<chat-id>', 'Chat room ID')
       .argument('<file-paths...>', 'One or more file paths')
       .option('--account <id>', 'Use a specific KakaoTalk account')
-      .option('--as <kind>', 'Force a specific kind: auto | photo | video | audio | file | multi')
+      .addOption(
+        new Option('--as <kind>', 'Force an attachment kind').choices([
+          'auto',
+          'photo',
+          'video',
+          'audio',
+          'file',
+          'multi',
+        ]),
+      )
       .option('--mime <type>', 'Override MIME type (otherwise inferred from filename)')
+      .option('--max-file-bytes <bytes>', 'Optional caller size limit per file, checked before sending any file')
       .option('--pretty', 'Pretty print JSON output')
       .action(uploadAction),
   )

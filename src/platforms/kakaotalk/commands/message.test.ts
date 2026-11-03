@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, mock, it } from 'bun:test'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 const originalConsoleLog = console.log
 
@@ -42,6 +45,21 @@ const mockGetReadState = mock(() =>
 )
 
 const originalExit = process.exit
+const mockSendFiles = mock(async () => ({
+  success: true,
+  status_code: 0,
+  chat_id: '100',
+  completed_count: 2,
+  files: [{ log_id: '11' }, { log_id: '12' }],
+}))
+const mockSendMultiPhoto = mock(async () => ({
+  success: true,
+  status_code: 0,
+  chat_id: '100',
+  log_id: '13',
+  sent_at: 0,
+}))
+const mockSendFile = mock(async () => ({ success: true, status_code: 0, chat_id: '100', log_id: '14', sent_at: 0 }))
 
 const mockClient = {
   getMessages: mockGetMessages,
@@ -49,6 +67,9 @@ const mockClient = {
   markRead: mockMarkRead,
   editMessage: mockEditMessage,
   getReadState: mockGetReadState,
+  sendFiles: mockSendFiles,
+  sendMultiPhoto: mockSendMultiPhoto,
+  sendFile: mockSendFile,
 }
 
 mock.module('./shared', () => ({
@@ -70,6 +91,11 @@ describe('message commands', () => {
     mockMarkRead.mockReset()
     mockEditMessage.mockReset()
     mockGetReadState.mockReset()
+    mockSendFiles.mockClear()
+    mockSendMultiPhoto.mockClear()
+    mockSendFile.mockClear()
+    const upload = messageCommand.commands.find((command) => command.name() === 'upload')!
+    for (const option of ['as', 'mime', 'maxFileBytes']) upload.setOptionValue(option, undefined)
 
     mockWithKakaoClient.mockImplementation(async (_options: unknown, fn: (client: unknown) => Promise<unknown>) => {
       return fn(mockClient)
@@ -101,6 +127,96 @@ describe('message commands', () => {
   afterEach(() => {
     console.log = originalConsoleLog
     process.exit = originalExit
+  })
+
+  describe('upload', () => {
+    let directory: string
+    beforeEach(() => {
+      directory = mkdtempSync(join(tmpdir(), 'kakao-upload-test-'))
+      for (const name of ['a.pdf', 'b.pdf', 'a.jpg', 'b.jpg']) writeFileSync(join(directory, name), 'fixture')
+    })
+    afterEach(() => {
+      rmSync(directory, { recursive: true, force: true })
+    })
+
+    it('routes multiple PDFs to sequential FILE messages and prints all results', async () => {
+      await messageCommand.parseAsync(
+        ['upload', '100', join(directory, 'a.pdf'), join(directory, 'b.pdf'), '--account', 'fixture'],
+        { from: 'user' },
+      )
+      expect(mockSendFiles).toHaveBeenCalledTimes(1)
+      expect(mockSendFiles.mock.calls[0]![1].map((file: { filename: string }) => file.filename)).toEqual([
+        'a.pdf',
+        'b.pdf',
+      ])
+      expect(mockSendMultiPhoto).not.toHaveBeenCalled()
+      expect(JSON.parse(consoleLogSpy.mock.calls[0][0]).files.map((file: { log_id: string }) => file.log_id)).toEqual([
+        '11',
+        '12',
+      ])
+    })
+
+    it('keeps image galleries and single --as=file output compatible', async () => {
+      await messageCommand.parseAsync(['upload', '100', join(directory, 'a.jpg'), join(directory, 'b.jpg')], {
+        from: 'user',
+      })
+      expect(mockSendMultiPhoto).toHaveBeenCalledTimes(1)
+      await messageCommand.parseAsync(['upload', '100', join(directory, 'a.pdf'), '--as', 'file'], { from: 'user' })
+      expect(mockSendFile).toHaveBeenCalledTimes(1)
+    })
+
+    it('supports ordered files for images with --as=file and caller size limits', async () => {
+      await messageCommand.parseAsync(
+        [
+          'upload',
+          '100',
+          join(directory, 'a.jpg'),
+          join(directory, 'b.jpg'),
+          '--as',
+          'file',
+          '--max-file-bytes',
+          '100',
+        ],
+        { from: 'user' },
+      )
+      expect(mockSendFiles.mock.calls[0]![2]).toEqual({ maxFileBytes: 100 })
+      expect(mockSendMultiPhoto).not.toHaveBeenCalled()
+    })
+
+    it('rejects missing files, too-large files and non-image galleries before client acquisition', async () => {
+      process.exit = mock(() => {
+        throw new Error('fixture exit')
+      }) as never
+      for (const args of [
+        ['upload', '100', join(directory, 'missing.pdf')],
+        ['upload', '100', join(directory, 'a.pdf'), '--max-file-bytes', '1'],
+        ['upload', '100', join(directory, 'a.pdf'), join(directory, 'b.pdf'), '--as', 'multi'],
+      ]) {
+        const upload = messageCommand.commands.find((command) => command.name() === 'upload')!
+        for (const option of ['as', 'mime', 'maxFileBytes']) upload.setOptionValue(option, undefined)
+        await expect(messageCommand.parseAsync(args, { from: 'user' })).rejects.toThrow('fixture exit')
+      }
+      expect(mockWithKakaoClient).not.toHaveBeenCalled()
+    })
+
+    it('prints partial results and exits nonzero on a batch failure', async () => {
+      mockSendFiles.mockResolvedValueOnce({
+        success: false,
+        status_code: -203,
+        chat_id: '100',
+        completed_count: 1,
+        files: [{ log_id: '11' }, { log_id: null }],
+      })
+      process.exit = mock(() => {
+        throw new Error('fixture exit')
+      }) as never
+      await expect(
+        messageCommand.parseAsync(['upload', '100', join(directory, 'a.pdf'), join(directory, 'b.pdf')], {
+          from: 'user',
+        }),
+      ).rejects.toThrow('fixture exit')
+      expect(JSON.parse(consoleLogSpy.mock.calls[0][0])).toMatchObject({ success: false, completed_count: 1 })
+    })
   })
 
   describe('list', () => {

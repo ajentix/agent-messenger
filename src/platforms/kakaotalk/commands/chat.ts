@@ -37,8 +37,25 @@ async function leaveAction(
   }
 }
 
+async function openAction(userId: string, options: { account?: string; pretty?: boolean }): Promise<void> {
+  try {
+    const result = await withKakaoClient(options, (client) => client.openDirectChat(userId))
+    console.log(formatOutput(result, options.pretty))
+  } catch (error) {
+    handleError(error as Error)
+  }
+}
+
 export const chatCommand = new Command('chat')
   .description('KakaoTalk chat commands')
+  .addCommand(
+    new Command('open')
+      .description('Return an existing normal direct chat with a user, or create it without sending a message')
+      .argument('<user-id>', 'Friend user ID')
+      .option('--account <id>', 'Use a specific KakaoTalk account')
+      .option('--pretty', 'Pretty print JSON output')
+      .action(openAction),
+  )
   .addCommand(
     new Command('list')
       .description('List chat rooms')

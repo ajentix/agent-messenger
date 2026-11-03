@@ -4,6 +4,14 @@ import { warn } from '@/shared/utils/stderr'
 
 import { type AttachmentInput, type ResolvedAttachment, planAttachments } from './attachment-router'
 import { isOpenKakaoChatType } from './chat-classifier'
+import {
+  addFriendByPhoneRequest,
+  canonicalPhone,
+  findFriend,
+  listFriendsRequest,
+  parseFriends,
+  type AddFriendByPhoneInput,
+} from './friends'
 import { detectImageDimensions } from './image-meta'
 import { sha1Hex } from './media-upload'
 import { LANG, PC_OS_NAME, getLocoDeviceConfig } from './protocol/config'
@@ -16,9 +24,13 @@ import { extractReadWatermarks } from './read-status'
 import { KakaoSyncStateStore } from './sync-state-store'
 import {
   KAKAO_MESSAGE_TYPE,
+  type KakaoAttachmentBatchResult,
   type KakaoChat,
   type KakaoDeviceType,
+  type KakaoDirectChatResult,
   type KakaoEditResult,
+  type KakaoFriend,
+  type KakaoFriendAddResult,
   type KakaoLeaveChatResult,
   type KakaoMarkReadResult,
   type KakaoMember,
@@ -867,6 +879,11 @@ export class KakaoTalkClient {
   private pushHandlers = new Set<KakaoPushHandler>()
   private sessionEventHandlers = new Set<KakaoSessionEventHandler>()
   private nameCache = new MemberNameCache()
+  private openingDirectChats = new Map<string, Promise<KakaoDirectChatResult>>()
+
+  constructor(
+    private readonly options: { fetchImpl?: typeof fetch; uploadMediaImpl?: typeof uploadMediaToLoco } = {},
+  ) {}
 
   async login(
     credentials?: { oauthToken: string; userId: string; deviceUuid?: string; deviceType?: KakaoDeviceType },
@@ -1155,6 +1172,236 @@ export class KakaoTalkClient {
         throw wrapError(error, 'get_chats_failed')
       }
     })
+  }
+
+  async getFriends(): Promise<KakaoFriend[]> {
+    this.ensureAuth()
+    if (this.closed) throw new KakaoTalkError('Client is closed', 'client_closed')
+    try {
+      const response = await listFriendsRequest(this.getCredentials(), this.options.fetchImpl)
+      if (response.status !== 0) {
+        throw new KakaoTalkError(`Friend list rejected (status ${response.status})`, 'get_friends_failed', {
+          serverStatus: response.status,
+        })
+      }
+      return parseFriends(response.body)
+    } catch (error) {
+      throw wrapError(error, 'get_friends_failed')
+    }
+  }
+
+  async addFriendByPhone(input: AddFriendByPhoneInput): Promise<KakaoFriendAddResult> {
+    this.ensureAuth()
+    if (this.closed) throw new KakaoTalkError('Client is closed', 'client_closed')
+    const nickname = input.nickname.trim()
+    const countryIso = input.countryIso ?? 'KR'
+    const countryCode = input.countryCode ?? '82'
+    if (!nickname || !/^[A-Z]{2}$/.test(countryIso) || !/^[1-9]\d{0,2}$/.test(countryCode)) {
+      throw new KakaoTalkError(
+        'Name, two-letter country ISO and numeric calling code are required',
+        'invalid_friend_input',
+      )
+    }
+    try {
+      canonicalPhone(input.phoneNumber, countryCode)
+    } catch (error) {
+      throw wrapError(error, 'invalid_friend_input')
+    }
+    // A contact add can succeed before a connection drops. Never replay this POST.
+    let response
+    try {
+      response = await addFriendByPhoneRequest(
+        this.getCredentials(),
+        { ...input, nickname, countryIso, countryCode },
+        this.options.fetchImpl,
+      )
+    } catch (error) {
+      throw wrapError(error, 'add_friend_unknown')
+    }
+    if (response.status !== 0) {
+      throw new KakaoTalkError(`Friend add rejected (status ${response.status})`, 'add_friend_rejected', {
+        serverStatus: response.status,
+      })
+    }
+    // node-kakao's phone-add response only promises pstn_number, not userId.
+    // Resolve the ID from the actual friend list by phone, never by display name.
+    try {
+      const friend = findFriend(await this.getFriends(), { phoneNumber: input.phoneNumber, countryCode })
+      if (!friend) throw new Error('Added contact has no unique phone match in the friend list')
+      return {
+        success: true,
+        status_code: 0,
+        user_id: friend.user_id,
+        nickname: friend.nickname,
+        phone_number: input.phoneNumber,
+      }
+    } catch {
+      throw new KakaoTalkError(
+        'Contact add was accepted but user_id could not be resolved. Check friend list; do not add again automatically.',
+        'friend_added_id_unresolved',
+      )
+    }
+  }
+
+  async openDirectChat(userId: string): Promise<KakaoDirectChatResult> {
+    let memberId: Long
+    try {
+      const id = exactInteger(userId).digits
+      if (BigInt(id) <= 0n || id === this.userId) throw new Error('A different, positive user ID is required')
+      memberId = Long.fromString(id)
+    } catch (error) {
+      throw wrapError(error, 'invalid_user_id')
+    }
+    this.ensureAuth()
+    const inFlight = this.openingDirectChats.get(userId)
+    if (inFlight) return inFlight
+    const operation = this.openDirectChatOnce(userId, memberId)
+    this.openingDirectChats.set(userId, operation)
+    try {
+      return await operation
+    } finally {
+      this.openingDirectChats.delete(userId)
+    }
+  }
+
+  private async openDirectChatOnce(userId: string, memberId: Long): Promise<KakaoDirectChatResult> {
+    // Fetch all rooms and verify identities in normal one-to-one rooms. An
+    // incomplete list or member lookup must not be interpreted as absence.
+    const chats = await this.getChats({ all: true })
+    const matches: string[] = []
+    for (const chat of chats) {
+      if (chat.active_members !== 2 || isOpenKakaoChatType(chat.type)) continue
+      if (typeof chat.type === 'string' && chat.type !== 'DirectChat') continue
+      const members = await this.getMembers(chat.chat_id)
+      if (
+        members.length === 2 &&
+        members.some((m) => m.user_id === this.userId) &&
+        members.some((m) => m.user_id === userId)
+      ) {
+        const detailed = typeof chat.type === 'number' ? await this.getChat(chat.chat_id) : chat
+        if (detailed.type !== 'DirectChat') {
+          if (typeof detailed.type === 'number')
+            throw new KakaoTalkError('Cannot identify numeric chat type as DirectChat', 'direct_chat_type_unresolved')
+          continue
+        }
+        matches.push(chat.chat_id)
+      }
+    }
+    if (matches.length > 1)
+      throw new KakaoTalkError('Multiple existing direct chats match this user', 'direct_chat_ambiguous')
+    if (matches.length === 1) {
+      return { success: true, status_code: 0, chat_id: matches[0]!, user_id: userId, existing: true }
+    }
+    return this.executeOnce(async ({ session, loginResult }) => {
+      try {
+        const response = await session.createChat([memberId])
+        assertLocoOk(response, 'CREATE')
+        const chatId = exactInteger(response.body.chatId).digits
+        if (BigInt(chatId) <= 0n) throw new Error('CREATE response missing a positive chatId')
+        // Keep the login snapshot consistent for another open in this session.
+        // Membership is still checked via GETMEM before returning it next time.
+        loginResult.chatDatas ??= []
+        if (!loginResult.chatDatas.some((chat) => longToString(chat.c) === chatId)) {
+          loginResult.chatDatas.push({ c: Long.fromString(chatId), t: 'DirectChat', a: 2, n: 0 })
+        }
+        return { success: true, status_code: 0, chat_id: chatId, user_id: userId, existing: false }
+      } catch (error) {
+        throw wrapError(error, 'open_direct_chat_failed', { classifyResponseFailure: true })
+      }
+    })
+  }
+
+  async sendFiles(
+    chatId: string,
+    files: readonly AttachmentInput[],
+    options?: { maxFileBytes?: number },
+  ): Promise<KakaoAttachmentBatchResult> {
+    this.ensureAuth()
+    if (this.closed) throw new KakaoTalkError('Client is closed', 'client_closed')
+    try {
+      if (BigInt(exactInteger(chatId).digits) <= 0n) throw new Error('A positive chat ID is required')
+    } catch (error) {
+      throw wrapError(error, 'invalid_chat_id')
+    }
+    if (files.length === 0) throw new KakaoTalkError('At least one file is required', 'invalid_files')
+    if (
+      options?.maxFileBytes !== undefined &&
+      (!Number.isSafeInteger(options.maxFileBytes) || options.maxFileBytes <= 0)
+    ) {
+      throw new KakaoTalkError('maxFileBytes must be a positive integer', 'invalid_file_limit')
+    }
+    // Validate the entire batch before sending the first file.
+    for (const file of files) {
+      if (!file.filename || file.data.byteLength === 0)
+        throw new KakaoTalkError('Files must have a name and nonzero bytes', 'invalid_file')
+      if (options?.maxFileBytes !== undefined && file.data.byteLength > options.maxFileBytes) {
+        throw new KakaoTalkError(
+          `File ${file.filename} has ${file.data.byteLength} bytes, exceeding the caller limit of ${options.maxFileBytes} bytes`,
+          'file_limit_exceeded',
+        )
+      }
+    }
+    const result: KakaoAttachmentBatchResult = {
+      success: true,
+      status_code: 0,
+      chat_id: chatId,
+      files: [],
+      completed_count: 0,
+    }
+    for (let index = 0; index < files.length; index++) {
+      const file = files[index]!
+      if (!result.success) {
+        result.files.push({
+          index,
+          filename: file.filename,
+          size: file.data.byteLength,
+          success: false,
+          status: 'skipped',
+          status_code: null,
+          chat_id: chatId,
+          log_id: null,
+          sent_at: null,
+          error: null,
+        })
+        continue
+      }
+      try {
+        const sent = await this.sendFile(chatId, file.data, file.filename, file.mime)
+        if (!sent.success)
+          throw new KakaoTalkError(
+            `File upload rejected (status ${sent.status_code}, ${file.data.byteLength} bytes)`,
+            'send_file_rejected',
+            { serverStatus: sent.status_code },
+          )
+        result.files.push({
+          ...sent,
+          index,
+          filename: file.filename,
+          size: file.data.byteLength,
+          status: 'sent',
+          error: null,
+        })
+        result.completed_count++
+      } catch (error) {
+        const failure = wrapError(error, 'send_file_unknown')
+        const rejected = failure.responseFailureKind === 'provider_rejection' || failure.code === 'send_file_rejected'
+        result.success = false
+        result.status_code = failure.serverStatus ?? -1
+        result.files.push({
+          index,
+          filename: file.filename,
+          size: file.data.byteLength,
+          success: false,
+          status: rejected ? 'failed' : 'unknown',
+          status_code: failure.serverStatus ?? null,
+          chat_id: chatId,
+          log_id: null,
+          sent_at: null,
+          error: { code: failure.code, message: failure.message },
+        })
+      }
+    }
+    return result
   }
 
   /**
@@ -1959,23 +2206,30 @@ export class KakaoTalkClient {
           opts.extension,
         )
 
-        if (shipResp.statusCode !== 0) {
-          throw new KakaoTalkError(`SHIP rejected (status ${shipResp.statusCode})`, opts.errorCode)
-        }
+        assertLocoOk(
+          shipResp,
+          `SHIP (${opts.filename}, ${opts.data.byteLength} bytes; check provider file-size/type limits)`,
+        )
 
         const body = shipResp.body as Record<string, unknown>
         const shipToken = body.k as string | undefined
         const shipHost = body.vh as string | undefined
         const shipPort = body.p as number | undefined
 
-        if (typeof shipToken !== 'string' || typeof shipHost !== 'string' || typeof shipPort !== 'number') {
-          throw new KakaoTalkError(
-            `SHIP response missing fields: k=${shipToken} vh=${shipHost} p=${shipPort}`,
-            opts.errorCode,
-          )
+        if (
+          typeof shipToken !== 'string' ||
+          !shipToken ||
+          typeof shipHost !== 'string' ||
+          !shipHost ||
+          typeof shipPort !== 'number' ||
+          !Number.isInteger(shipPort) ||
+          shipPort < 1 ||
+          shipPort > 65535
+        ) {
+          throw new KakaoTalkError('SHIP response missing a valid upload ticket, host or port', opts.errorCode)
         }
 
-        const uploadRes = await uploadMediaToLoco({
+        const uploadRes = await (this.options.uploadMediaImpl ?? uploadMediaToLoco)({
           shipToken,
           shipHost,
           shipPort,
@@ -1993,15 +2247,33 @@ export class KakaoTalkClient {
         const chatLog = completeBody?.chatLog as Record<string, unknown> | undefined
         const logId = chatLog?.logId
 
+        if (uploadRes.postStatusCode !== 0) {
+          throw new KakaoTalkError(
+            `POST rejected (status ${uploadRes.postStatusCode}, ${opts.filename}, ${opts.data.byteLength} bytes; check provider file-size/type limits)`,
+            opts.errorCode,
+            { serverStatus: uploadRes.postStatusCode, responseFailureKind: 'provider_rejection' },
+          )
+        }
+        if (!uploadRes.completePacket)
+          throw new KakaoTalkError(
+            `COMPLETE missing for ${opts.filename}; delivery is unknown, check history before retry`,
+            'media_delivery_unknown',
+          )
+        assertLocoOk(uploadRes.completePacket, 'COMPLETE')
+        if (BigInt(exactInteger(logId).digits) <= 0n)
+          throw new Error('COMPLETE missing a positive logId; delivery is unknown')
+        if (chatLog?.chatId !== undefined && exactInteger(chatLog.chatId).digits !== opts.chatId)
+          throw new Error('COMPLETE chatId mismatch; delivery is unknown')
+
         return {
-          success: uploadRes.completePacket !== null && uploadRes.postStatusCode === 0,
+          success: true,
           status_code: uploadRes.postStatusCode,
           chat_id: opts.chatId,
           log_id: longToString(logId),
           sent_at: (chatLog?.sendAt as number | undefined) ?? 0,
         }
       } catch (error) {
-        throw wrapError(error, opts.errorCode)
+        throw wrapError(error, opts.errorCode, { classifyResponseFailure: true })
       }
     })
   }

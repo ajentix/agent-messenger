@@ -42,6 +42,16 @@ export function buildReplyWriteBody(chatId: Long, text: string, extra: KakaoRepl
 // Reverse-engineered from KakaoTalk 25.x — see `LocoSession.sendTyping` docs.
 export const TYPING_ACTION_METHOD = 'ACTION'
 
+// CREATE is the normal-chat operation used by the official client and
+// node-kakao. A one-to-one chat is created with one other member ID.
+export const CREATE_CHAT_METHOD = 'CREATE'
+
+export function buildCreateChatBody(memberIds: Long[], name?: string): Record<string, unknown> {
+  const body: Record<string, unknown> = { memberIds }
+  if (name !== undefined) body.nickName = name
+  return body
+}
+
 // Builds the BSON body the official KakaoTalk client emits for the typing
 // indicator subtype of the `ACTION` opcode. Exported so protocol tests can lock
 // the exact field shape.
@@ -221,6 +231,11 @@ export class LocoSession {
       KAKAO_MESSAGE_TYPE.TEXT,
       mentions?.length ? { mentions } : undefined,
     )
+  }
+
+  async createChat(memberIds: Long[], name?: string): Promise<LocoPacket> {
+    if (!this.connection) throw new Error('Not connected')
+    return this.connection.sendPacket(CREATE_CHAT_METHOD, buildCreateChatBody(memberIds, name))
   }
 
   // Quoted reply — a WRITE with message_type 26 (REPLY) whose `extra` JSON
