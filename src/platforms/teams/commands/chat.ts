@@ -122,9 +122,11 @@ export async function getAction(chatId: string, messageId: string, options: { pr
 export async function sendAction(
   chatId: string,
   content = '',
-  options: { pretty?: boolean; format?: string; files?: string[]; quote?: string },
+  options: { pretty?: boolean; format?: string; files?: string[]; file?: string[]; quote?: string },
 ): Promise<void> {
   const format = resolveFormat(options.format, options.pretty)
+  // Commander names a repeatable --file option `file`.
+  options = { ...options, files: options.files ?? options.file }
 
   try {
     const credManager = new TeamsCredentialManager()
@@ -167,7 +169,14 @@ export async function editAction(
   chatId: string,
   messageId: string,
   content: string | undefined,
-  options: { pretty?: boolean; format?: string; dropImages?: boolean; images?: string[]; mediaHost?: string },
+  options: {
+    pretty?: boolean
+    format?: string
+    dropImages?: boolean
+    images?: string[]
+    image?: string[]
+    mediaHost?: string
+  },
 ): Promise<void> {
   const format = resolveFormat(options.format, options.pretty)
 
@@ -187,7 +196,11 @@ export async function editAction(
       region: cred.region,
     })
     const images = await Promise.all(
-      (options.images ?? []).map(async (path) => ({ data: await readFile(path), filename: basename(path) })),
+      // Commander names a repeatable --image option `image`.
+      (options.images ?? options.image ?? []).map(async (path) => ({
+        data: await readFile(path),
+        filename: basename(path),
+      })),
     )
     // Like the Teams app, an edit keeps the images already in the message unless asked not to.
     // Without new content it keeps the text and mentions too, so images can be added on their own.
