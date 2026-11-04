@@ -249,24 +249,16 @@ await client.sendAttachment('9876543210', [
 
 The typed helpers `sendPhoto`, `sendVideo`, `sendAudio`, `sendFile`, and `sendMultiPhoto` remain available when you want to bypass MIME sniffing and dispatch to a specific message_type explicitly.
 
-### Phone Contacts and Direct Chats
+### Direct Chats
 
 ```typescript
-const added = await client.addFriendByPhone({
-  nickname: 'Test Contact',
-  phoneNumber: '01000000000',
-  countryIso: 'KR',
-  countryCode: '82',
-})
-const room = await client.openDirectChat(added.user_id)
+const room = await client.openDirectChat('1234567890') // Verified recipient user ID
 // room.chat_id, room.user_id, room.existing
-const friends = await client.getFriends()
-// user_id, nickname, phone_number, direct_chat_id (IDs are decimal strings)
 ```
 
-Phone addition is a write. Its documented response only promises `pstn_number`, so ID resolution reads the friend list and requires a unique normalized phone match. An accepted add whose ID cannot be resolved throws `friend_added_id_unresolved`; inspect the list before trying again. Transport failures during the add throw `add_friend_unknown`. Neither automatically replays the add.
+`openDirectChat` checks all rooms and normal direct-chat member identities before creating. It returns an existing room when found. CREATE is attempted once and does not send text. Incomplete room/member discovery, ambiguous matches, invalid IDs and unresolved numeric room types stop the operation. CREATE transport errors may represent an already-created room; check the room list before retrying. Protocol reference: node-kakao commit `8512e4699e2cd4c26516b80d38b57b2f85a6cc8a`, retained in `research/kakaotalk/node-kakao/`.
 
-`openDirectChat` checks all rooms and normal direct-chat member identities before creating. It returns an existing room when found. CREATE is attempted once and does not send text. Incomplete room/member discovery, ambiguous matches, invalid IDs and unresolved numeric room types stop the operation. CREATE transport errors may represent an already-created room; check the room list before retrying. Protocol reference: node-kakao commit `8512e4699e2cd4c26516b80d38b57b2f85a6cc8a`, retained in `research/kakaotalk/node-kakao/`. Current server behavior has not been tested with a live account.
+Opening by user ID and returning an existing room with `existing: true` were verified with a real account on 2026-11-03. Phone contact addition was excluded after real-account rejection with server status 1101 (cause unknown). Friend listing was not called with a real account and is also excluded.
 
 ### Sequential Files with Individual Receipts
 
@@ -281,6 +273,8 @@ const result = await client.sendFiles(room.chat_id, [
 ```
 
 `sendFiles` sends each input as FILE (18), awaiting SHIP/POST/COMPLETE before the next. It returns `KakaoAttachmentBatchResult`. Each input has a zero-based index, filename, byte size, status (`sent`, `failed`, `unknown`, `skipped`), nullable log ID/time/status code and nullable error. The first refusal or uncertain delivery stops subsequent sends; completed receipts are retained. It performs no automatic retry. An empty batch, empty file or caller size-limit violation is rejected before the first send. No provider byte/count cap is invented from the source evidence.
+
+The single-file send path, including uploader changes, was verified through an overlay with a real account on 2026-11-03 by matching the sent file against history. Multi-file sequencing is covered by offline tests; no live multi-file batch was verified.
 
 The original `sendAttachment([...])` behavior remains: images use a gallery, mixed inputs are dispatched in sequence and return only the final send result (or the first failure). Use `sendFiles` when every file needs its own receipt. All data buffers are supplied by the caller; file mutation and approval fingerprints belong to the caller's workflow.
 

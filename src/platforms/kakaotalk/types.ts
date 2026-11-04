@@ -145,21 +145,6 @@ export interface KakaoSendResult {
   sent_at: number
 }
 
-export interface KakaoFriend {
-  user_id: string
-  nickname: string
-  phone_number: string | null
-  direct_chat_id: string | null
-}
-
-export interface KakaoFriendAddResult {
-  success: boolean
-  status_code: number
-  user_id: string
-  nickname: string
-  phone_number: string
-}
-
 export interface KakaoDirectChatResult {
   success: boolean
   status_code: number
@@ -188,21 +173,6 @@ export interface KakaoAttachmentBatchResult {
   files: KakaoAttachmentBatchItem[]
   completed_count: number
 }
-
-export const KakaoFriendSchema = z.object({
-  user_id: z.string(),
-  nickname: z.string(),
-  phone_number: z.string().nullable(),
-  direct_chat_id: z.string().nullable(),
-})
-
-export const KakaoFriendAddResultSchema = z.object({
-  success: z.boolean(),
-  status_code: z.number(),
-  user_id: z.string(),
-  nickname: z.string(),
-  phone_number: z.string(),
-})
 
 export const KakaoDirectChatResultSchema = z.object({
   success: z.boolean(),

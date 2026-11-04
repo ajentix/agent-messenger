@@ -276,6 +276,8 @@ agent-kakaotalk message upload <chat-id> ./one.pdf ./two.pdf ./three.pdf --as fi
 agent-kakaotalk message upload <chat-id> ./one.pdf ./two.pdf --as file --max-file-bytes 10000000
 ```
 
+The single-file upload path, including uploader changes, was verified through an overlay with a real account on 2026-11-03 by matching the sent file against history. Sequential multi-file sends have offline coverage; a live multi-file batch was not verified.
+
 Sequential output contains `success`, `status_code`, `chat_id`, `completed_count` and `files`. Each file has its input `index` (zero-based), `filename`, byte `size`, `status` (`sent`, `failed`, `unknown`, or `skipped`), `log_id`, `sent_at`, `status_code` and `error`. Unconfirmed IDs are `null`. The first failure stops subsequent sends. Successful files keep their IDs. Uncertain delivery is never automatically retried; check history before retrying.
 
 `--max-file-bytes` is an optional caller limit applied to every file before any send. It is not a Kakao server limit. The protocol sources do not establish a current server byte limit or gallery count limit. Provider refusals preserve the stage (SHIP/POST/COMPLETE) and status. Sequential FILE sends have no SDK batch count or total-byte cap and do not use the desktop app's multi-selection flow. This does not bypass server per-file or rate limits.
@@ -412,19 +414,17 @@ Output includes:
 | `--account` | Use a specific KakaoTalk account (default: current account) |
 | `--pretty`  | Human-readable output instead of JSON                       |
 
-## Friends and New Direct Chats
+## Direct Chats
 
 ```bash
-agent-kakaotalk friend list --account <account-id> --pretty
-agent-kakaotalk friend add-phone 01000000000 "Test Contact" --country-iso KR --country-code 82 --account <account-id> --pretty
-agent-kakaotalk chat open <friend-user-id> --account <account-id> --pretty
+agent-kakaotalk chat open <user-id> --account <account-id> --pretty
 ```
-
-`friend add-phone` adds a contact and returns `success`, `status_code`, `user_id`, `nickname` and `phone_number`. The API response only guarantees a phone number, so the SDK resolves the ID by comparing normalized phone numbers in the friend list. Missing or ambiguous phone matches produce an error instead of a name-based guess. If the add succeeded but resolution failed, check `friend list`; do not automatically repeat the add. Names alone cannot verify a person's identity.
 
 `chat open` checks the complete room list and member identities, returns the existing normal `DirectChat` when found, or sends one `CREATE { memberIds: [userId] }` request. It returns `success`, `status_code`, `chat_id`, `user_id` and `existing`. It sends no message. Incomplete discovery or ambiguous rooms are errors. Numeric room types are resolved through CHATINFO. A type that remains numeric is rejected because it cannot be identified as DirectChat from the available source evidence.
 
-These operations follow node-kakao source contracts, pinned in `research/kakaotalk/node-kakao/`. They have offline unit coverage but require human verification against a current Kakao account. Phone privacy settings, unavailable friend phone numbers or account restrictions may prevent an add or ID resolution. Contact add and CREATE are attempted once, with no automatic replay after a lost response.
+Opening a direct chat by user ID and returning an existing room with `existing: true` were verified with a real account on 2026-11-03. Protocol references are pinned in `research/kakaotalk/node-kakao/`. CREATE is attempted once, with no automatic replay after a lost response.
+
+Phone contact addition was excluded after real-account rejection with server status 1101 (cause unknown). Friend listing was not called with a real account and is also excluded.
 
 ## Storage
 
@@ -434,7 +434,7 @@ These operations follow node-kakao source contracts, pinned in `research/kakaota
 
 - No file download
 - Normal direct chat creation is supported; group and open-chat creation are not exposed
-- Friend listing and phone contact addition are supported; hiding, deletion and other friend management are not exposed
+- No friend listing, contact addition or other friend management
 - No reactions or emoji
 - No message deletion (editing your own text messages is supported, see `message edit`)
 - No open chat browsing or joining

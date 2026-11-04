@@ -19,8 +19,6 @@ export type {
   KakaoChat,
   KakaoChatType,
   KakaoDirectChatResult,
-  KakaoFriend,
-  KakaoFriendAddResult,
   KakaoOpenChatType,
   KakaoConfig,
   KakaoDeviceType,
@@ -67,8 +65,6 @@ export {
   KakaoChatSchema,
   KakaoConfigSchema,
   KakaoDirectChatResultSchema,
-  KakaoFriendSchema,
-  KakaoFriendAddResultSchema,
   KakaoEditResultSchema,
   KakaoLeaveChatResultSchema,
   KakaoMarkReadResultSchema,
@@ -97,7 +93,6 @@ export type {
   KakaoOAuthRefreshResult,
 } from './auth/oauth-refresh'
 export { sha1Hex } from './media-upload'
-export type { AddFriendByPhoneInput } from './friends'
 export { detectImageDimensions } from './image-meta'
 export type { AttachmentInput, AttachmentPlan, ResolvedAttachment, SingleAttachmentKind } from './attachment-router'
 export { planAttachments, resolveAttachment } from './attachment-router'

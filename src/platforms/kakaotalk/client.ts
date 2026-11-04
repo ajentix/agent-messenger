@@ -4,14 +4,6 @@ import { warn } from '@/shared/utils/stderr'
 
 import { type AttachmentInput, type ResolvedAttachment, planAttachments } from './attachment-router'
 import { isOpenKakaoChatType } from './chat-classifier'
-import {
-  addFriendByPhoneRequest,
-  canonicalPhone,
-  findFriend,
-  listFriendsRequest,
-  parseFriends,
-  type AddFriendByPhoneInput,
-} from './friends'
 import { detectImageDimensions } from './image-meta'
 import { sha1Hex } from './media-upload'
 import { LANG, PC_OS_NAME, getLocoDeviceConfig } from './protocol/config'
@@ -29,8 +21,6 @@ import {
   type KakaoDeviceType,
   type KakaoDirectChatResult,
   type KakaoEditResult,
-  type KakaoFriend,
-  type KakaoFriendAddResult,
   type KakaoLeaveChatResult,
   type KakaoMarkReadResult,
   type KakaoMember,
@@ -881,9 +871,7 @@ export class KakaoTalkClient {
   private nameCache = new MemberNameCache()
   private openingDirectChats = new Map<string, Promise<KakaoDirectChatResult>>()
 
-  constructor(
-    private readonly options: { fetchImpl?: typeof fetch; uploadMediaImpl?: typeof uploadMediaToLoco } = {},
-  ) {}
+  constructor(private readonly options: { uploadMediaImpl?: typeof uploadMediaToLoco } = {}) {}
 
   async login(
     credentials?: { oauthToken: string; userId: string; deviceUuid?: string; deviceType?: KakaoDeviceType },
@@ -1172,75 +1160,6 @@ export class KakaoTalkClient {
         throw wrapError(error, 'get_chats_failed')
       }
     })
-  }
-
-  async getFriends(): Promise<KakaoFriend[]> {
-    this.ensureAuth()
-    if (this.closed) throw new KakaoTalkError('Client is closed', 'client_closed')
-    try {
-      const response = await listFriendsRequest(this.getCredentials(), this.options.fetchImpl)
-      if (response.status !== 0) {
-        throw new KakaoTalkError(`Friend list rejected (status ${response.status})`, 'get_friends_failed', {
-          serverStatus: response.status,
-        })
-      }
-      return parseFriends(response.body)
-    } catch (error) {
-      throw wrapError(error, 'get_friends_failed')
-    }
-  }
-
-  async addFriendByPhone(input: AddFriendByPhoneInput): Promise<KakaoFriendAddResult> {
-    this.ensureAuth()
-    if (this.closed) throw new KakaoTalkError('Client is closed', 'client_closed')
-    const nickname = input.nickname.trim()
-    const countryIso = input.countryIso ?? 'KR'
-    const countryCode = input.countryCode ?? '82'
-    if (!nickname || !/^[A-Z]{2}$/.test(countryIso) || !/^[1-9]\d{0,2}$/.test(countryCode)) {
-      throw new KakaoTalkError(
-        'Name, two-letter country ISO and numeric calling code are required',
-        'invalid_friend_input',
-      )
-    }
-    try {
-      canonicalPhone(input.phoneNumber, countryCode)
-    } catch (error) {
-      throw wrapError(error, 'invalid_friend_input')
-    }
-    // A contact add can succeed before a connection drops. Never replay this POST.
-    let response
-    try {
-      response = await addFriendByPhoneRequest(
-        this.getCredentials(),
-        { ...input, nickname, countryIso, countryCode },
-        this.options.fetchImpl,
-      )
-    } catch (error) {
-      throw wrapError(error, 'add_friend_unknown')
-    }
-    if (response.status !== 0) {
-      throw new KakaoTalkError(`Friend add rejected (status ${response.status})`, 'add_friend_rejected', {
-        serverStatus: response.status,
-      })
-    }
-    // node-kakao's phone-add response only promises pstn_number, not userId.
-    // Resolve the ID from the actual friend list by phone, never by display name.
-    try {
-      const friend = findFriend(await this.getFriends(), { phoneNumber: input.phoneNumber, countryCode })
-      if (!friend) throw new Error('Added contact has no unique phone match in the friend list')
-      return {
-        success: true,
-        status_code: 0,
-        user_id: friend.user_id,
-        nickname: friend.nickname,
-        phone_number: input.phoneNumber,
-      }
-    } catch {
-      throw new KakaoTalkError(
-        'Contact add was accepted but user_id could not be resolved. Check friend list; do not add again automatically.',
-        'friend_added_id_unresolved',
-      )
-    }
   }
 
   async openDirectChat(userId: string): Promise<KakaoDirectChatResult> {

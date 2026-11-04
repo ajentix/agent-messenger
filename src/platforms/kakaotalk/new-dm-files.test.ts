@@ -13,153 +13,14 @@ const credentials = {
   deviceType: 'tablet' as const,
 }
 
-function fixture(fetchImpl?: typeof fetch, uploadMediaImpl?: typeof uploadMediaToLoco) {
+function fixture(uploadMediaImpl?: typeof uploadMediaToLoco) {
   const createChat = mock(async () => ({ statusCode: 0, body: { chatId: Long.fromString('459750513901477') } }))
   const shipMedia = mock(async () => ({ statusCode: 0, body: { status: -203 } }))
-  const client = new KakaoTalkClient({ fetchImpl, uploadMediaImpl })
+  const client = new KakaoTalkClient({ uploadMediaImpl })
   // Install a completely local session. No login, credential files or sockets.
   Object.assign(client, credentials, { state: { session: { createChat, shipMedia }, loginResult: {} } })
   return { client, createChat, shipMedia }
 }
-
-function jsonFetch(responses: Array<Record<string, unknown> | Error>) {
-  return mock(async () => {
-    const response = responses.shift()
-    if (response instanceof Error) throw response
-    if (!response) throw new Error('Unexpected request')
-    return new Response(JSON.stringify(response), { status: 200 })
-  }) as unknown as typeof fetch & ReturnType<typeof mock>
-}
-
-describe('phone contacts', () => {
-  it('uses the documented POST form, then resolves user_id from a phone match', async () => {
-    const fetchImpl = jsonFetch([
-      { status: 0, pstn_number: '+82 10-0000-0000' },
-      {
-        status: 0,
-        token: 10,
-        friends: [{ userId: '9007199254740993', nickName: '상대', phoneNumber: '+821000000000' }],
-      },
-    ])
-    const { client } = fixture(fetchImpl)
-    const result = await client.addFriendByPhone({ nickname: '상대', phoneNumber: '010-0000-0000' })
-    expect(result.user_id).toBe('9007199254740993')
-    expect(result.success).toBe(true)
-    const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit]
-    expect(url).toBe('https://katalk.kakao.com/android/friends/add_by_phonenumber.json')
-    expect(init.method).toBe('POST')
-    expect(init.redirect).toBe('error')
-    expect((init.body as URLSearchParams).get('phonenumber')).toBe('010-0000-0000')
-    expect((init.body as URLSearchParams).get('nickname')).toBe('상대')
-    expect((init.body as URLSearchParams).get('country_iso')).toBe('KR')
-    expect((init.body as URLSearchParams).get('country_code')).toBe('82')
-    expect((init.headers as Record<string, string>).Authorization).toBe('fixture-token-fixture-device')
-    const listUrl = new URL(fetchImpl.mock.calls[1][0])
-    expect(listUrl.pathname).toBe('/android/friends/list.json')
-    expect(listUrl.searchParams.get('token')).toBe('0')
-  })
-
-  it('preserves bare 64-bit user IDs in friend JSON', async () => {
-    const fetchImpl = mock(
-      async () => new Response('{"status":0,"friends":[{"userId":9007199254740993,"nickName":"a"}]}'),
-    ) as unknown as typeof fetch
-    const { client } = fixture(fetchImpl)
-    expect((await client.getFriends())[0]!.user_id).toBe('9007199254740993')
-  })
-
-  it('never substitutes a matching nickname for a missing phone match', async () => {
-    const fetchImpl = jsonFetch([
-      { status: 0, pstn_number: '01000000000' },
-      { status: 0, friends: [{ userId: 2, nickName: '동명인', phoneNumber: '01011111111' }] },
-    ])
-    const { client } = fixture(fetchImpl)
-    await expect(client.addFriendByPhone({ nickname: '동명인', phoneNumber: '01000000000' })).rejects.toMatchObject({
-      code: 'friend_added_id_unresolved',
-    })
-    expect(fetchImpl).toHaveBeenCalledTimes(2)
-  })
-
-  it('ignores masked unrelated phones and uses the documented PC service prefix', async () => {
-    const fetchImpl = jsonFetch([
-      { status: 0, pstn_number: '01000000000' },
-      {
-        status: 0,
-        friends: [
-          { userId: 3, phoneNumber: '010****1111' },
-          { userId: 2, phoneNumber: '01000000000' },
-        ],
-      },
-    ])
-    const { client } = fixture(fetchImpl)
-    Object.assign(client, { deviceType: 'pc' })
-    expect((await client.addFriendByPhone({ nickname: 'a', phoneNumber: '01000000000' })).user_id).toBe('2')
-    expect(fetchImpl.mock.calls[0]![0]).toBe('https://katalk.kakao.com/mac/friends/add_by_phonenumber.json')
-  })
-
-  it('reports an accepted add with a missing/ambiguous list match without replaying the POST', async () => {
-    for (const friends of [
-      [],
-      [
-        { userId: 2, phoneNumber: '01000000000' },
-        { userId: 3, phoneNumber: '01000000000' },
-      ],
-    ]) {
-      const fetchImpl = jsonFetch([{ status: 0 }, { status: 0, friends }])
-      const { client } = fixture(fetchImpl)
-      await expect(client.addFriendByPhone({ nickname: 'a', phoneNumber: '01000000000' })).rejects.toMatchObject({
-        code: 'friend_added_id_unresolved',
-      })
-      expect(fetchImpl).toHaveBeenCalledTimes(2)
-    }
-  })
-
-  it('propagates provider rejection and makes no friend-list request', async () => {
-    const fetchImpl = jsonFetch([{ status: -500 }])
-    const { client } = fixture(fetchImpl)
-    await expect(client.addFriendByPhone({ nickname: 'a', phoneNumber: '01000000000' })).rejects.toMatchObject({
-      code: 'add_friend_rejected',
-      serverStatus: -500,
-    })
-    expect(fetchImpl).toHaveBeenCalledTimes(1)
-  })
-
-  it('does not retry uncertain adds or expose transport error text', async () => {
-    const fetchImpl = jsonFetch([new Error('secret token in URL')])
-    const { client } = fixture(fetchImpl)
-    try {
-      await client.addFriendByPhone({ nickname: 'a', phoneNumber: '01000000000' })
-      throw new Error('Expected failure')
-    } catch (error) {
-      expect(error).toMatchObject({ code: 'add_friend_unknown' })
-      expect((error as Error).message).not.toContain('secret token')
-    }
-    expect(fetchImpl).toHaveBeenCalledTimes(1)
-  })
-
-  it('rejects invalid input before calling HTTP', async () => {
-    const fetchImpl = jsonFetch([])
-    const { client } = fixture(fetchImpl)
-    await expect(client.addFriendByPhone({ nickname: '', phoneNumber: '01000000000' })).rejects.toMatchObject({
-      code: 'invalid_friend_input',
-    })
-    await expect(client.addFriendByPhone({ nickname: 'a', phoneNumber: 'oops' })).rejects.toMatchObject({
-      code: 'invalid_friend_input',
-    })
-    expect(fetchImpl).not.toHaveBeenCalled()
-  })
-
-  it('fails closed on missing status, HTTP failure and malformed friend lists', async () => {
-    for (const response of [
-      new Response('{}'),
-      new Response('{"status":0}', { status: 403 }),
-      new Response('{"status":0,"friends":null}'),
-    ]) {
-      const fetchImpl = mock(async () => response) as unknown as typeof fetch
-      const { client } = fixture(fetchImpl)
-      await expect(client.getFriends()).rejects.toMatchObject({ code: 'get_friends_failed' })
-    }
-  })
-})
 
 describe('direct chats', () => {
   const room = (chatId: string, type: string | number = 'DirectChat') =>
@@ -385,7 +246,7 @@ describe('sequential files', () => {
         body: { chatLog: { chatId: Long.fromString('100'), logId: Long.fromString(sent(index++).log_id), sendAt: 10 } },
       },
     }))
-    const { client, shipMedia } = fixture(undefined, upload)
+    const { client, shipMedia } = fixture(upload)
     shipMedia.mockResolvedValue({ statusCode: 0, body: { k: 'fixture-ticket', vh: 'fixture.invalid', p: 443 } })
     const result = await client.sendFiles('100', files)
     expect(result.completed_count).toBe(7)
@@ -412,7 +273,7 @@ describe('sequential files', () => {
       [complete({ chatLog: { logId: 0 } }), 'unknown'],
     ] as const) {
       const upload = mock(async () => ({ postStatusCode: 0, postOffset: 0, completePacket: packet }))
-      const { client, shipMedia } = fixture(undefined, upload)
+      const { client, shipMedia } = fixture(upload)
       shipMedia.mockResolvedValue({ statusCode: 0, body: { k: 'fixture-ticket', vh: 'fixture.invalid', p: 443 } })
       const result = await client.sendFiles('100', files)
       expect(result.files[0]!.status).toBe(expected)
@@ -424,7 +285,7 @@ describe('sequential files', () => {
 
   it('reports POST refusal distinctly and rejects invalid batch chat IDs', async () => {
     const upload = mock(async () => ({ postStatusCode: -203, postOffset: 0, completePacket: null }))
-    const { client, shipMedia } = fixture(undefined, upload)
+    const { client, shipMedia } = fixture(upload)
     shipMedia.mockResolvedValue({ statusCode: 0, body: { k: 'fixture-ticket', vh: 'fixture.invalid', p: 443 } })
     const result = await client.sendFiles('100', files)
     expect(result.files[0]).toMatchObject({ status: 'failed', status_code: -203 })
