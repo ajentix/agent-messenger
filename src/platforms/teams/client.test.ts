@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
 import { rmSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { TeamsClient } from './client'
+import { TeamsClient, setChatImagePollMs } from './client'
 import { TeamsCredentialManager } from './credential-manager'
 import { TeamsAuthCapabilityError, TeamsError } from './types'
 
@@ -561,6 +561,218 @@ describe('TeamsClient', () => {
       expect(message.images_kept).toBeUndefined()
       expect(fetchCalls).toHaveLength(1)
       expect(JSON.parse(String(fetchCalls[0].options?.body)).content).toBe('<p>new</p>')
+    })
+
+    // 1x1 PNG header is enough for the size reader; 1600x900 makes the tag scale to 800x450.
+    const pngBytes = () => {
+      const bytes = Buffer.alloc(33)
+      bytes.writeUInt32BE(0x89504e47, 0)
+      bytes.writeUInt32BE(0x0d0a1a0a, 4)
+      bytes.writeUInt32BE(13, 8)
+      bytes.write('IHDR', 12, 'ascii')
+      bytes.writeUInt32BE(1600, 16)
+      bytes.writeUInt32BE(900, 20)
+      return bytes
+    }
+    const mentionBody =
+      '<p><span itemtype="http://schema.skype.com/Mention" itemscope="" itemid="0">Kim</span> hello</p>'
+    const storedMentions = JSON.stringify([
+      {
+        '@type': 'http://schema.skype.com/Mention',
+        itemid: 0,
+        mri: '8:orgid:abc',
+        mentionType: 'person',
+        displayName: 'Kim',
+      },
+    ])
+
+    it('adds an uploaded image and keeps the text and mentions when no content is given', async () => {
+      setChatImagePollMs(0)
+      mockResponse({
+        messages: [
+          { id: 'msg1', messagetype: 'RichText/Html', content: mentionBody, properties: { mentions: storedMentions } },
+          { id: 'msg0', messagetype: 'RichText/Html', content: `<p>old</p>${storedImage}` },
+        ],
+      })
+      mockResponse({ id: '0-skr-d1-new' }, 201)
+      mockResponse({}, 201)
+      mockResponse({ content_state: 'ready' })
+      mockResponse({ edittime: 1704067200000 })
+
+      const client = await new TeamsClient().login({ token: 'test-token', accountType: 'personal' })
+      const message = await client.editChatMessage('19:group@thread.v2', 'msg1', undefined, 'text', {
+        keepImages: true,
+        images: [{ data: pngBytes(), filename: 'mail.png' }],
+      })
+
+      expect(message.images_added).toBe(1)
+      expect(fetchCalls[1].url).toBe('https://kr-prod.asyncgw.teams.microsoft.com/v1/objects/')
+      expect(JSON.parse(String(fetchCalls[1].options?.body))).toEqual({
+        type: 'pish/image',
+        permissions: { '19:group@thread.v2': ['read'] },
+        filename: 'mail.png',
+      })
+      expect((fetchCalls[1].options?.headers as Record<string, string> | undefined)?.Authorization).toBe(
+        'skype_token test-token',
+      )
+      expect(fetchCalls[2].url).toBe(
+        'https://kr-prod.asyncgw.teams.microsoft.com/v1/objects/0-skr-d1-new/content/imgpsh',
+      )
+      expect(fetchCalls[2].options?.method).toBe('PUT')
+      expect(fetchCalls[3].url).toBe(
+        'https://kr-prod.asyncgw.teams.microsoft.com/v1/objects/0-skr-d1-new/views/imgo/status',
+      )
+      const payload = JSON.parse(String(fetchCalls[4].options?.body))
+      expect(fetchCalls[4].options?.method).toBe('PUT')
+      expect(payload.content.startsWith(mentionBody)).toBe(true)
+      expect(payload.content).toContain(
+        'src="https://kr-prod.asyncgw.teams.microsoft.com/v1/objects/0-skr-d1-new/views/imgo" width="800" height="450"',
+      )
+      expect(payload.amsreferences).toEqual(['0-skr-d1-new'])
+      expect(payload.properties).toEqual({ mentions: storedMentions })
+      expect(payload.skypeeditedid).toBe('msg1')
+    })
+
+    it('refuses to add images when the chat has no stored image to show its gateway', async () => {
+      mockResponse({ messages: [{ id: 'msg1', messagetype: 'RichText/Html', content: '<p>hi</p>' }] })
+
+      const client = await new TeamsClient().login({ token: 'test-token', accountType: 'personal' })
+      await expect(
+        client.editChatMessage('19:group@thread.v2', 'msg1', undefined, 'text', {
+          keepImages: true,
+          images: [{ data: pngBytes(), filename: 'mail.png' }],
+        }),
+      ).rejects.toThrow('media gateway is unknown')
+      expect(fetchCalls).toHaveLength(1)
+    })
+
+    it('rejects a file that is not an image before reading or uploading anything', async () => {
+      const client = await new TeamsClient().login({ token: 'test-token', accountType: 'personal' })
+      await expect(
+        client.editChatMessage('19:group@thread.v2', 'msg1', undefined, 'text', {
+          images: [{ data: Buffer.from('%PDF-1.7'), filename: 'doc.pdf' }],
+          mediaHost: 'https://kr-prod.asyncgw.teams.microsoft.com',
+        }),
+      ).rejects.toThrow('doc.pdf is not a PNG, JPEG or GIF image.')
+      expect(fetchCalls).toHaveLength(0)
+    })
+
+    it('leaves the message unchanged when the upload fails', async () => {
+      setChatImagePollMs(0)
+      mockResponse({ messages: [{ id: 'msg1', messagetype: 'RichText/Html', content: '<p>hi</p>' }] })
+      mockResponse({ errors: { model: ['bad'] } }, 400)
+
+      const client = await new TeamsClient().login({ token: 'test-token', accountType: 'personal' })
+      await expect(
+        client.editChatMessage('19:group@thread.v2', 'msg1', undefined, 'text', {
+          images: [{ data: pngBytes(), filename: 'mail.png' }],
+          mediaHost: 'https://kr-prod.asyncgw.teams.microsoft.com/',
+        }),
+      ).rejects.toThrow('Image upload could not start (HTTP 400).')
+      expect(fetchCalls.some((call) => call.options?.method === 'PUT')).toBe(false)
+    })
+
+    it('keeps the images already in the message when only adding images', async () => {
+      setChatImagePollMs(0)
+      mockResponse({
+        messages: [{ id: 'msg1', messagetype: 'RichText/Html', content: `<p>old</p>${storedImage}` }],
+      })
+      mockResponse({ id: '0-skr-d1-new' }, 201)
+      mockResponse({}, 201)
+      mockResponse({ content_state: 'ready' })
+      mockResponse({ edittime: 1704067200000 })
+
+      const client = await new TeamsClient().login({ token: 'test-token', accountType: 'personal' })
+      const message = await client.editChatMessage('19:group@thread.v2', 'msg1', undefined, 'text', {
+        images: [{ data: pngBytes(), filename: 'mail.png' }],
+      })
+
+      const payload = JSON.parse(String(fetchCalls[4].options?.body))
+      expect(payload.content.startsWith(`<p>old</p>${storedImage}`)).toBe(true)
+      expect(payload.amsreferences).toEqual(['0-ckr-d1-abc', '0-skr-d1-new'])
+      expect(message.images_kept).toBe(1)
+      for (const call of fetchCalls.slice(1, 4)) expect(call.options?.redirect).toBe('error')
+    })
+
+    it('encodes the object id in the image URL and keeps it whole in the references', async () => {
+      setChatImagePollMs(0)
+      mockResponse({ messages: [{ id: 'msg1', messagetype: 'RichText/Html', content: '<p>hi</p>' }] })
+      mockResponse({ id: 'obj/seg?x' }, 201)
+      mockResponse({}, 201)
+      mockResponse({ content_state: 'ready' })
+      mockResponse({ edittime: 1704067200000 })
+
+      const client = await new TeamsClient().login({ token: 'test-token', accountType: 'personal' })
+      await client.editChatMessage('19:group@thread.v2', 'msg1', undefined, 'text', {
+        images: [{ data: pngBytes(), filename: 'mail.png' }],
+        mediaHost: 'https://kr-prod.asyncgw.teams.microsoft.com',
+      })
+
+      expect(fetchCalls[2].url).toBe('https://kr-prod.asyncgw.teams.microsoft.com/v1/objects/obj%2Fseg%3Fx/content/imgpsh')
+      const payload = JSON.parse(String(fetchCalls[4].options?.body))
+      expect(payload.content).toContain('src="https://kr-prod.asyncgw.teams.microsoft.com/v1/objects/obj%2Fseg%3Fx/views/imgo"')
+      expect(payload.amsreferences).toEqual(['obj/seg?x'])
+    })
+
+    it('stops reading pages once the message is found when no gateway is needed', async () => {
+      mockResponse({
+        messages: [{ id: 'msg1', messagetype: 'RichText/Html', content: '<p>old</p>' }],
+        _metadata: { backwardLink: 'https://msgapi.teams.live.com/v1/users/ME/conversations/19%3Agroup%40thread.v2/messages?page=2' },
+      })
+      mockResponse({ edittime: 1704067200000 })
+
+      const client = await new TeamsClient().login({ token: 'test-token', accountType: 'personal' })
+      await client.editChatMessage('19:group@thread.v2', 'msg1', 'new', 'text', { keepImages: true })
+
+      expect(fetchCalls).toHaveLength(2)
+      expect(fetchCalls[1].options?.method).toBe('PUT')
+    })
+
+    it('does not edit the message when a later image fails to upload', async () => {
+      setChatImagePollMs(0)
+      mockResponse({ messages: [{ id: 'msg1', messagetype: 'RichText/Html', content: '<p>hi</p>' }] })
+      mockResponse({ id: 'first' }, 201)
+      mockResponse({}, 201)
+      mockResponse({ content_state: 'ready' })
+      mockResponse({ id: 'second' }, 201)
+      mockResponse({ error: 'boom' }, 500)
+
+      const client = await new TeamsClient().login({ token: 'test-token', accountType: 'personal' })
+      await expect(
+        client.editChatMessage('19:group@thread.v2', 'msg1', undefined, 'text', {
+          images: [
+            { data: pngBytes(), filename: 'a.png' },
+            { data: pngBytes(), filename: 'b.png' },
+          ],
+          mediaHost: 'https://kr-prod.asyncgw.teams.microsoft.com',
+        }),
+      ).rejects.toThrow('Image upload failed (HTTP 500).')
+      expect(fetchCalls.some((call) => call.url.includes('/conversations/') && call.options?.method === 'PUT')).toBe(false)
+    })
+
+    it('does not edit the message when the uploaded image never becomes ready', async () => {
+      setChatImagePollMs(0)
+      mockResponse({ messages: [{ id: 'msg1', messagetype: 'RichText/Html', content: '<p>hi</p>' }] })
+      mockResponse({ id: 'slow' }, 201)
+      mockResponse({}, 201)
+      for (let i = 0; i < 20; i++) mockResponse({ content_state: 'in progress' })
+
+      const client = await new TeamsClient().login({ token: 'test-token', accountType: 'personal' })
+      await expect(
+        client.editChatMessage('19:group@thread.v2', 'msg1', undefined, 'text', {
+          images: [{ data: pngBytes(), filename: 'a.png' }],
+          mediaHost: 'https://kr-prod.asyncgw.teams.microsoft.com',
+        }),
+      ).rejects.toThrow('was not ready in time')
+      expect(fetchCalls.some((call) => call.url.includes('/conversations/') && call.options?.method === 'PUT')).toBe(false)
+    })
+
+    it('needs new content or an image', async () => {
+      const client = await new TeamsClient().login({ token: 'test-token', accountType: 'personal' })
+      await expect(client.editChatMessage('19:group@thread.v2', 'msg1', undefined)).rejects.toThrow(
+        'Give new content or at least one image to add.',
+      )
+      expect(fetchCalls).toHaveLength(0)
     })
   })
 
